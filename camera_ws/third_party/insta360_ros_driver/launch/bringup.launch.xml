@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<launch>
+    <arg name="equirectangular" default="false"/>
+    <arg name="surround" default="false"/>
+    <arg name="decoder" default="true"/>
+    <arg name="hardware_decoder" default="false"/>
+    <arg name="imu_filter" default="true"/>
+    <arg name="equirectangular_config" default="$(find-pkg-share insta360_ros_driver)/config/equirectangular.yaml"/>
+    <arg name="imu_config" default="$(find-pkg-share insta360_ros_driver)/config/imu_filter.yaml"/>
+    <arg name="usb_timeout_sec" default="30"/>
+    <arg name="startup_timeout_sec" default="30"/>
+    <arg name="stream_timeout_sec" default="10"/>
+    <include file="$(find-pkg-share insta360_ros_driver)/launch/x3_ready.launch.py">
+        <arg name="equirectangular" value="$(var equirectangular)"/>
+        <arg name="surround" value="$(var surround)"/>
+        <arg name="decoder" value="$(var decoder)"/>
+        <arg name="hardware_decoder" value="$(var hardware_decoder)"/>
+        <arg name="imu_filter" value="$(var imu_filter)"/>
+        <arg name="equirectangular_config" value="$(var equirectangular_config)"/>
+        <arg name="imu_config" value="$(var imu_config)"/>
+        <arg name="usb_timeout_sec" value="$(var usb_timeout_sec)"/>
+        <arg name="startup_timeout_sec" value="$(var startup_timeout_sec)"/>
+        <arg name="stream_timeout_sec" value="$(var stream_timeout_sec)"/>
+    </include>
+</launch>

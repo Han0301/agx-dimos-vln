@@ -1,0 +1,482 @@
+# Copyright 2025-2026 Dimensional Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Rerun bridge for logging pubsub messages with to_rerun() methods."""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+from dataclasses import field
+from functools import lru_cache
+import time
+from typing import (
+    Any,
+    Literal,
+    Protocol,
+    TypeAlias,
+    TypeGuard,
+    cast,
+    runtime_checkable,
+)
+
+from reactivex.disposable import Disposable
+from rerun._baseclasses import Archetype
+from rerun.blueprint import Blueprint
+from toolz import pipe  # type: ignore[import-untyped]
+import typer
+import cv2
+import numpy as np
+
+from dimos.core.core import rpc
+from dimos.core.module import Module, ModuleConfig
+from dimos.core.stream import In
+from dimos.msgs.sensor_msgs.Image import Image, ImageFormat
+from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
+from dimos.protocol.pubsub.impl.lcmpubsub import LCM
+from dimos.protocol.pubsub.patterns import Glob, pattern_matches
+from dimos.protocol.pubsub.spec import SubscribeAllCapable
+from dimos.utils.logging_config import setup_logger
+
+# Message types with large payloads that need rate-limiting.
+# Image (~1 MB/frame at 30 fps) and PointCloud2 (~600-800 KB/frame)
+# cause viewer OOM if logged at full rate.  Light messages
+# (Path, PointStamped, Twist, TF, EntityMarkers …) pass through
+# unthrottled so navigation overlays and user input are never dropped.
+_HEAVY_MSG_TYPES: tuple[type, ...] = (Image, PointCloud2)
+
+RERUN_GRPC_PORT = 9876
+RERUN_WEB_PORT = 9090
+_DEPTH_CLIP_MAX_M = 6.0
+# TODO OUT visual annotations
+#
+# In the future it would be nice if modules can annotate their individual OUTs with (general or rerun specific)
+# hints related to their visualization
+#
+# so stuff like color, update frequency etc (some Image needs to be rendered on the 3d floor like occupancy grid)
+# some other image is an image to be streamed into a specific 2D view etc.
+#
+# To achieve this we'd feed a full blueprint into the rerun bridge.
+#
+# rerun bridge can then inspect all transports used, all modules with their outs,
+# automatically spy an all the transports and read visualization hints
+#
+# Temporarily we are using these "sideloading" visual_override={} dict on the bridge
+# to define custom visualizations for specific topics
+#
+# as well as pubsubs={} to specify which protocols to listen to.
+
+
+# TODO better TF processing
+#
+# this is rerun bridge specific, rerun has a specific (better) way of handling TFs
+# using entity path conventions, each of these nodes in a path are TF frames:
+#
+# /world/robot1/base_link/camera/optical
+#
+# While here since we are just listening on TFMessage messages which optionally contain
+# just a subset of full TF tree we don't know the full tree structure to build full entity
+# path for a transform being published
+#
+# This is easy to reconstruct but a service/tf.py already does this so should be integrated here
+#
+# we have decoupled entity paths and actual transforms (like ROS TF frames)
+# https://rerun.io/docs/concepts/logging-and-ingestion/transforms
+#
+# tf#/world
+# tf#/base_link
+# tf#/camera
+#
+# In order to solve this, bridge needs to own it's own tf service
+# and render it's tf tree into correct rerun entity paths
+
+
+logger = setup_logger()
+
+BlueprintFactory: TypeAlias = Callable[[], "Blueprint"]
+
+# to_rerun() can return a single archetype or a list of (entity_path, archetype) tuples
+RerunMulti: TypeAlias = "list[tuple[str, Archetype]]"
+RerunData: TypeAlias = "Archetype | RerunMulti"
+
+
+def is_rerun_multi(data: Any) -> TypeGuard[RerunMulti]:
+    """Check if data is a list of (entity_path, archetype) tuples."""
+    return (
+        isinstance(data, list)
+        and bool(data)
+        and isinstance(data[0], tuple)
+        and len(data[0]) == 2
+        and isinstance(data[0][0], str)
+        and isinstance(data[0][1], Archetype)
+    )
+
+
+@runtime_checkable
+class RerunConvertible(Protocol):
+    """Protocol for messages that can be converted to Rerun data."""
+
+    def to_rerun(self) -> RerunData: ...
+
+
+ViewerMode = Literal["native", "web", "connect", "none"]
+
+
+def _default_blueprint() -> Blueprint:
+    """Default blueprint with black background and raised grid."""
+    import rerun as rr
+    import rerun.blueprint as rrb
+
+    return rrb.Blueprint(  # type: ignore[no-any-return]
+        rrb.Spatial3DView(
+            origin="world",
+            background=rrb.Background(kind="SolidColor", color=[0, 0, 0]),
+            line_grid=rrb.LineGrid3D(
+                plane=rr.components.Plane3D.XY.with_distance(0.2),
+            ),
+        ),
+    )
+
+
+# Maps global_config.viewer -> bridge viewer_mode.
+# Evaluated at blueprint construction time (main process), not in start() (worker process).
+_BACKEND_TO_MODE: dict[str, ViewerMode] = {
+    "rerun": "native",
+    "rerun-web": "web",
+    "rerun-connect": "connect",
+    "none": "none",
+}
+
+
+def _resolve_viewer_mode() -> ViewerMode:
+    from dimos.core.global_config import global_config
+
+    return _BACKEND_TO_MODE.get(global_config.viewer, "native")
+
+
+class Config(ModuleConfig):
+    """Configuration for RerunBridgeModule."""
+
+    pubsubs: list[SubscribeAllCapable[Any, Any]] = field(default_factory=lambda: [LCM()])
+
+    visual_override: dict[Glob | str, Callable[[Any], Archetype]] = field(default_factory=dict)
+
+    # Static items logged once after start. Maps entity_path -> callable(rr) returning Archetype
+    static: dict[str, Callable[[Any], Archetype]] = field(default_factory=dict)
+
+    min_interval_sec: float = 0.1  # Rate-limit per entity path (default: 10 Hz max)
+    entity_prefix: str = "world"
+    topic_to_entity: Callable[[Any], str] | None = None
+    viewer_mode: ViewerMode = field(default_factory=_resolve_viewer_mode)
+    connect_url: str = "rerun+http://127.0.0.1:9877/proxy"
+    memory_limit: str = "25%"
+
+    # Blueprint factory: callable(rrb) -> Blueprint for viewer layout configuration
+    # Set to None to disable default blueprint
+    blueprint: BlueprintFactory | None = _default_blueprint
+
+
+class RerunBridgeModule(Module[Config]):
+    """Bridge that logs messages from pubsubs to Rerun.
+
+    Spawns its own Rerun viewer and subscribes to all topics on each provided
+    pubsub. Any message that has a to_rerun() method is automatically logged.
+
+    Optional ``realsense_image`` / ``realsense_depth`` In streams allow
+    pSHM-transported D435i images (which bypass LCM) to appear in the viewer.
+
+    Example:
+        from dimos.protocol.pubsub.impl.lcmpubsub import LCM
+
+        lcm = LCM()
+        bridge = RerunBridgeModule(pubsubs=[lcm])
+        bridge.start()
+        # All messages with to_rerun() are now logged to Rerun
+        bridge.stop()
+    """
+
+    default_config = Config
+
+    # Camera image streams.  pSHM transports are assigned by the blueprint so images
+    # arrive here directly without going through LCM (which is unreliable for large frames).
+    color_image: In[Image]
+    depth_image: In[Image]
+    realsense_image: In[Image]
+    realsense_depth: In[Image]
+
+    @lru_cache(maxsize=256)
+    def _visual_override_for_entity_path(
+        self, entity_path: str
+    ) -> Callable[[Any], RerunData | None]:
+        """Return a composed visual override for the entity path.
+
+        Chains matching overrides from config, ending with final_convert
+        which handles .to_rerun() or passes through Archetypes.
+        """
+        # find all matching converters for this entity path
+        matches = [
+            fn
+            for pattern, fn in self.config.visual_override.items()
+            if pattern_matches(pattern, entity_path)
+        ]
+
+        # None means "suppress this topic entirely"
+        if any(fn is None for fn in matches):
+            return lambda msg: None
+
+        # final step (ensures we return Archetype or None)
+        def final_convert(msg: Any) -> RerunData | None:
+            if isinstance(msg, Archetype):
+                return msg
+            if is_rerun_multi(msg):
+                return msg
+            if isinstance(msg, RerunConvertible):
+                return msg.to_rerun()
+            return None
+
+        # compose all converters
+        return lambda msg: pipe(msg, *matches, final_convert)
+
+    def _get_entity_path(self, topic: Any) -> str:
+        """Convert a topic to a Rerun entity path."""
+        if self.config.topic_to_entity:
+            return self.config.topic_to_entity(topic)
+
+        # Default: use topic.name if available (LCM Topic), else str
+        topic_str = getattr(topic, "name", None) or str(topic)
+        # Strip everything after # (LCM topic suffix)
+        topic_str = topic_str.split("#")[0]
+        return f"{self.config.entity_prefix}{topic_str}"
+
+    def _on_color_image(self, image: Image) -> None:
+        if not hasattr(image, "data") or image.data is None:
+            return
+
+        now = time.monotonic()
+        if now - self._last_log.get("world/camera_optical/rgb", 0.0) < self.config.min_interval_sec:
+            return
+        self._last_log["world/camera_optical/rgb"] = now
+
+        import rerun as rr
+
+        rr.log("world/camera_optical/rgb", rr.Image(image.data, color_model="RGB"))
+
+    def _on_depth_image(self, image: Image) -> None:
+        if not hasattr(image, "data") or image.data is None:
+            return
+
+        now = time.monotonic()
+        if now - self._last_log.get("world/camera_optical/depth", 0.0) < self.config.min_interval_sec:
+            return
+        self._last_log["world/camera_optical/depth"] = now
+
+        import rerun as rr
+
+        d = np.asarray(image.data)
+        if d.ndim == 3:
+            d = d[..., 0] if d.shape[-1] == 1 else cv2.cvtColor(d, cv2.COLOR_BGR2GRAY)
+        d_m = np.clip(d.astype(np.float32), 0.0, _DEPTH_CLIP_MAX_M)
+        rr.log("world/camera_optical/depth", rr.DepthImage(d_m, meter=1.0))
+
+    def _on_realsense_image(self, image: Image) -> None:
+        if not hasattr(image, "data") or image.data is None:
+            return
+
+        now = time.monotonic()
+        if now - self._last_log.get("world/realsense_optical/rgb", 0.0) < self.config.min_interval_sec:
+            return
+        self._last_log["world/realsense_optical/rgb"] = now
+
+        import rerun as rr
+
+        self._latest_realsense_frame = cv2.cvtColor(image.data, cv2.COLOR_RGB2BGR)
+        rr.log("world/realsense_optical/rgb", rr.Image(image.data, color_model="RGB"))
+
+    def _on_realsense_depth(self, image: Image) -> None:
+        if not hasattr(image, "data") or image.data is None:
+            return
+
+        now = time.monotonic()
+        if now - self._last_log.get("world/realsense_optical/depth", 0.0) < self.config.min_interval_sec:
+            return
+        self._last_log["world/realsense_optical/depth"] = now
+
+        import rerun as rr
+
+        d = np.asarray(image.data)
+        if d.ndim == 3:
+            d = d[..., 0] if d.shape[-1] == 1 else cv2.cvtColor(d, cv2.COLOR_BGR2GRAY)
+
+        if image.format == ImageFormat.DEPTH16 or d.dtype == np.uint16:
+            d_m = d.astype(np.float32) / 1000.0
+        else:
+            d_m = d.astype(np.float32)
+
+        d_m = np.clip(d_m, 0.0, _DEPTH_CLIP_MAX_M)
+
+        # Stash colorized depth for WebSocket visualization
+        norm = (d_m / _DEPTH_CLIP_MAX_M * 255.0).astype(np.uint8)
+        self._latest_depth_frame = cv2.applyColorMap(norm, cv2.COLORMAP_TURBO)
+
+        rr.log("world/realsense_optical/depth", rr.DepthImage(d_m, meter=1.0))
+
+    def _on_message(self, msg: Any, topic: Any) -> None:
+        """Handle incoming message - log to rerun."""
+        import rerun as rr
+
+        # convert a potentially complex topic object into an str rerun entity path
+        entity_path: str = self._get_entity_path(topic)
+
+        # Rate-limit heavy data types to prevent viewer memory exhaustion.
+        # High-bandwidth streams (e.g. 30fps camera, lidar) would otherwise
+        # flood the viewer faster than it can evict, causing OOM.  Light
+        # messages (Path, PointStamped, TF, etc.) pass through unthrottled.
+        if self.config.min_interval_sec > 0 and isinstance(msg, _HEAVY_MSG_TYPES):
+            now = time.monotonic()
+            last = self._last_log.get(entity_path, 0.0)
+            if now - last < self.config.min_interval_sec:
+                return
+            self._last_log[entity_path] = now
+
+        # apply visual overrides (including final_convert which handles .to_rerun())
+        rerun_data: RerunData | None = self._visual_override_for_entity_path(entity_path)(msg)
+
+        # converters can also suppress logging by returning None
+        if not rerun_data:
+            return
+
+        # TFMessage for example returns list of (entity_path, archetype) tuples
+        if is_rerun_multi(rerun_data):
+            for path, archetype in rerun_data:
+                rr.log(path, archetype)
+        else:
+            rr.log(entity_path, cast("Archetype", rerun_data))
+
+    @rpc
+    def start(self) -> None:
+        import rerun as rr
+
+        super().start()
+
+        self._last_log: dict[str, float] = {}
+        logger.info("Rerun bridge starting", viewer_mode=self.config.viewer_mode)
+
+        # Initialize and spawn Rerun viewer
+        rr.init("dimos")
+
+        if self.config.viewer_mode == "native":
+            try:
+                import rerun_bindings
+
+                rerun_bindings.spawn(
+                    port=RERUN_GRPC_PORT,
+                    executable_name="dimos-viewer",
+                    memory_limit=self.config.memory_limit,
+                )
+            except ImportError:
+                pass  # dimos-viewer not installed
+            except Exception:
+                logger.warning(
+                    "dimos-viewer found but failed to spawn, falling back to stock rerun",
+                    exc_info=True,
+                )
+            rr.spawn(connect=True, memory_limit=self.config.memory_limit)
+        elif self.config.viewer_mode == "web":
+            server_uri = rr.serve_grpc()
+            rr.serve_web_viewer(connect_to=server_uri, open_browser=False)
+        elif self.config.viewer_mode == "connect":
+            rr.connect_grpc(self.config.connect_url)
+        # "none" - just init, no viewer (connect externally)
+
+        if self.config.blueprint:
+            rr.send_blueprint(self.config.blueprint())
+
+        # Start pubsubs and subscribe to all messages
+        for pubsub in self.config.pubsubs:
+            logger.info(f"bridge listening on {pubsub.__class__.__name__}")
+            if hasattr(pubsub, "start"):
+                pubsub.start()  # type: ignore[union-attr]
+            unsub = pubsub.subscribe_all(self._on_message)
+            self._disposables.add(Disposable(unsub))
+
+        self._disposables.add(Disposable(self.color_image.subscribe(self._on_color_image)))
+        self._disposables.add(Disposable(self.depth_image.subscribe(self._on_depth_image)))
+        self._disposables.add(Disposable(self.realsense_image.subscribe(self._on_realsense_image)))
+        self._disposables.add(Disposable(self.realsense_depth.subscribe(self._on_realsense_depth)))
+
+        # Add pubsub stop as disposable
+        for pubsub in self.config.pubsubs:
+            if hasattr(pubsub, "stop"):
+                self._disposables.add(Disposable(pubsub.stop))  # type: ignore[union-attr]
+
+        self._log_static()
+
+    def _log_static(self) -> None:
+        import rerun as rr
+
+        for entity_path, factory in self.config.static.items():
+            data = factory(rr)
+            if isinstance(data, list):
+                for archetype in data:
+                    rr.log(entity_path, archetype, static=True)
+            else:
+                rr.log(entity_path, data, static=True)
+
+    @rpc
+    def stop(self) -> None:
+        super().stop()
+
+
+def run_bridge(
+    viewer_mode: str = "native",
+    memory_limit: str = "25%",
+) -> None:
+    """Start a RerunBridgeModule with default LCM config and block until interrupted."""
+    import signal
+
+    from dimos.protocol.service.lcmservice import autoconf
+
+    autoconf(check_only=True)
+
+    bridge = RerunBridgeModule(
+        viewer_mode=viewer_mode,
+        memory_limit=memory_limit,
+        # any pubsub that supports subscribe_all and topic that supports str(topic)
+        # is acceptable here
+        pubsubs=[LCM()],
+    )
+
+    bridge.start()
+
+    signal.signal(signal.SIGINT, lambda *_: bridge.stop())
+    signal.pause()
+
+
+app = typer.Typer()
+
+
+@app.command()
+def cli(
+    viewer_mode: str = typer.Option(
+        "native", help="Viewer mode: native (desktop), web (browser), none (headless)"
+    ),
+    memory_limit: str = typer.Option(
+        "25%", help="Memory limit for Rerun viewer (e.g., '4GB', '16GB', '25%')"
+    ),
+) -> None:
+    """Rerun bridge for LCM messages."""
+    run_bridge(viewer_mode=viewer_mode, memory_limit=memory_limit)
+
+
+if __name__ == "__main__":
+    app()

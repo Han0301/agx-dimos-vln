@@ -1,0 +1,42 @@
+# ROS 2 / colcon build products
+build/
+install/
+log/
+
+# Local Python environments and caches
+.secrets/
+.venv
+venv/
+.cache/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.uv-cache/
+
+# Editor and desktop files
+.vscode/
+.idea/
+.DS_Store
+
+# Local captures
+*.bag
+*.db3
+bag/
+image_capture/
+
+# Original SDK archives and extracted vendor bundles are local-only.
+vendor/
+jsons/
+downloads/
+CameraSDK*
+Linux_CameraSDK*
+
+# Insta360 CameraSDK is obtained separately from Insta360. Do not publish it
+# unless your SDK agreement explicitly permits redistribution.
+third_party/insta360_ros_driver/lib/*
+!third_party/insta360_ros_driver/lib/.gitkeep
+third_party/insta360_ros_driver/lib/jsons/
+third_party/insta360_ros_driver/include/camera/*
+!third_party/insta360_ros_driver/include/camera/.gitkeep
+third_party/insta360_ros_driver/include/stream/*
+!third_party/insta360_ros_driver/include/stream/.gitkeep

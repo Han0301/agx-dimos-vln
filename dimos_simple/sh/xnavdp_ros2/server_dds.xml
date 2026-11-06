@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<profiles xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
+ <transport_descriptors>
+  <transport_descriptor><transport_id>xnavdp_udp</transport_id><type>UDPv4</type></transport_descriptor>
+  <transport_descriptor><transport_id>xnavdp_tcp</transport_id><type>TCPv4</type><listening_ports><port>7411</port></listening_ports><wan_addr>10.10.10.56</wan_addr></transport_descriptor>
+ </transport_descriptors>
+ <participant profile_name="xnavdp_server" is_default_profile="true">
+  <rtps>
+   <userTransports>
+    <transport_id>xnavdp_udp</transport_id>
+    <transport_id>xnavdp_tcp</transport_id>
+   </userTransports>
+   <useBuiltinTransports>false</useBuiltinTransports>
+  </rtps>
+ </participant>
+</profiles>

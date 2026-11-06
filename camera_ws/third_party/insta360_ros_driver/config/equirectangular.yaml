@@ -1,0 +1,14 @@
+equirectangular_node:
+  ros__parameters:
+    cx_offset: 0.0
+    cy_offset: 3.0
+    back_cx_offset: 0.0
+    back_cy_offset: 3.0
+    back_radius_scale: 1.0
+    crop_size: 1920
+    mount_roll_deg: 90
+    translation: [-0.007, -0.018, -0.231]
+    rotation_deg: [-0.5, 0.0, 1.1]
+    gpu: true
+    out_width: 1440
+    out_height: 720
