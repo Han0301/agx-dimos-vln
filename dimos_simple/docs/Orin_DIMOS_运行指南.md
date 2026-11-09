@@ -4,10 +4,7 @@
 
 ```bash
 # 终端1: 启动两个相机
-'/home/deepvln/insta360_ws/start_cameras.sh'
-
-# 终端2: 独立记录多方面日志
-'/home/deepvln/insta360_ws/start_debug_logging.sh'
+bash camera_ws/start_cameras.sh
 
 # 终端3：启动dimos
 # 在本工作空间根目录执行
@@ -33,7 +30,7 @@ xnavdp测试：一直发布前方3m的目标点，测试其是否能脱困
 ```bash
 # 在本工作空间根目录执行
 source ./sh/activate_vln.sh
-python /home/deepvln/Documents/Codex/2026-11-01/new-chat-2/xnavdp_goal_3m_test.py
+# 测试脚本不在本仓库，请使用 sh/xnavdp_ros2/README.md 中的诊断命令
 ```
 
 

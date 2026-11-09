@@ -78,3 +78,6 @@ CLAUDE.MD
 htmlcov/
 .coverage
 .coverage.*
+
+# Keep environment setup scripts in version control.
+!sh/start_venv/

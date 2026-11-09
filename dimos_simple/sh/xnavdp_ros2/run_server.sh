@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -e
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-source /home/guest/native_ros_jazzy/setup.bash
-source /home/guest/bag5090_bench_20261103/strict_chain/host_config.sh
-export XNAVDP_MODEL_ROOT=/home/guest/bag5090_bench_20261103/strict_chain
+export XNAVDP_MODEL_ROOT="${XNAVDP_MODEL_ROOT:-$HOME/bag5090_bench_20261103/strict_chain}"
+source "${XNAVDP_ROS_SETUP:-$HOME/native_ros_jazzy/setup.bash}"
+source "${XNAVDP_HOST_CONFIG:-$XNAVDP_MODEL_ROOT/host_config.sh}"
 export ROS_DOMAIN_ID="${XNAVDP_ROS_DOMAIN_ID:-0}"
 export ROS_LOCALHOST_ONLY=0 ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET
 export RMW_IMPLEMENTATION=rmw_fastrtps_cpp

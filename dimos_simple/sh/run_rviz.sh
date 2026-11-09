@@ -2,8 +2,8 @@
 set -e
 DIMOS_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 XNAVDP_DIR="$DIMOS_DIR/sh/xnavdp_rviz"
-if [[ -f /home/deepvln/ros2_jazzy/install/setup.bash ]]; then
-    source /home/deepvln/ros2_jazzy/install/setup.bash
+if [[ -f "${ROS2_JAZZY:-$HOME/ros2_jazzy}/install/setup.bash" ]]; then
+    source "${ROS2_JAZZY:-$HOME/ros2_jazzy}/install/setup.bash"
 elif [[ -f /opt/ros/jazzy/setup.bash ]]; then
     source /opt/ros/jazzy/setup.bash
 else

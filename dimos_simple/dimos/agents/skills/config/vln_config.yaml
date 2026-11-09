@@ -350,15 +350,15 @@ deployment:
     their real-world appearance. Be aware that the wide-angle lens may
     cause slight barrel distortion near image edges.
 
-# Optional five-camera detector. Assist mode enables detector-backed navigation.
+# Optional five-camera detector. Configure its external service paths before enabling it.
 perception:
   mode: disabled
   lifecycle: managed
   endpoint: http://127.0.0.1:8768
-  service_launcher: /home/deepvln/insta360_ws/src/target_perception/scripts/run_service.sh
-  service_python: /home/deepvln/insta360_ws/.venvs/target_perception/bin/python
-  service_config: /home/deepvln/insta360_ws/src/target_perception/config/service.yaml
-  log_dir: /home/deepvln/insta360_ws/log/target_perception
+  service_launcher: ""
+  service_python: ""
+  service_config: ""
+  log_dir: ""
   consume_hz: 10
   max_observation_age_ms: 350
   fallback: vlm

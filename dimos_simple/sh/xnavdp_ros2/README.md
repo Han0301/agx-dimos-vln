@@ -22,12 +22,12 @@
 
 ## 启动
 
-服务器：`guest@10.10.10.56`，目录 `/home/guest/xnavdp_ros2_topics`，执行 `./run_server.sh`，日志 `server.log`。
+服务器：`guest@10.10.10.56`，登录后进入 `~/xnavdp_ros2_topics`，执行 `./run_server.sh`，日志 `server.log`。
 
-Orin/当前机器：先重启原相机启动程序（`/home/deepvln/camera_ws/start_cameras.sh`，使用原有相机选择参数），再启动 DimOS：
+Orin/当前机器：先重启原相机启动程序（在仓库根目录执行 `bash camera_ws/start_cameras.sh`，使用原有相机选择参数），再启动 DimOS：
 
 ```bash
-source /home/deepvln/dimos_simple/sh/activate_vln.sh
+source ./sh/activate_vln.sh
 dimos --debug_mode true --robot-ip 192.168.123.161 --navigation-policy xnavdp run unitree-go2-vln-local
 ```
 
@@ -38,7 +38,7 @@ XNavDP 模式在 blueprint 合并完成后，将显式共享内存传输改为�
 ## 检查
 
 ```bash
-source /home/deepvln/dimos_simple/sh/activate_vln.sh
+source ./sh/activate_vln.sh
 python -m dimos.navigation.xnavdp.diagnostics --health-only
 ros2 topic hz /odom
 ros2 topic hz /camera/camera/color/image_raw/compressed
