@@ -56,7 +56,7 @@ usage() {
 Usage:
   bash start_cameras.sh                         # start D455 and X3
   bash start_cameras.sh --camera x3             # start X3 only
-  bash start_cameras.sh --camera d455           # start D455 only
+  bash start_cameras.sh --camera d455           # restart D455 in a new session
   bash start_cameras.sh --camera x3 d455        # start both
   bash start_cameras.sh --status                # read-only status dashboard
   bash start_cameras.sh --status --groups D455  # status for a selected camera
@@ -180,6 +180,10 @@ start_selected_groups() {
   source "${WORKSPACE_DIR}/config/xnavdp_dds.bash"
 
   for group in "$@"; do
+    if [[ "$group" == d455 ]]; then
+      state_line WAIT 'Stopping any previous local D455 group before starting this session...'
+      "$PYTHON_BIN" "${STACK_DIR}/restart_d455.py" "$WORKSPACE_DIR"
+    fi
     if ! guard_existing "$group"; then
       state_line ERROR "Old ${group^^} camera group is still running. Stop it first, or use --status for read-only monitoring."
       exit 2

@@ -4,12 +4,44 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import statistics
+import threading
 import time
 
 import numpy as np
 
 from dimos.navigation.xnavdp.client import XNavDPClient
+
+
+def _wait_for_camera_intrinsic(client: XNavDPClient, timeout: float = 10.0) -> np.ndarray:
+    """Read live camera calibration only when initializing a cold backend."""
+    from rclpy.qos import qos_profile_sensor_data
+
+    topic = os.environ.get("XNAVDP_CAMERA_INFO_TOPIC", "/camera/camera/color/camera_info")
+    ready = threading.Event()
+    calibration: list[np.ndarray] = []
+
+    def receive(message):
+        intrinsic = np.asarray(message.k, dtype=float).reshape(3, 3)
+        if (np.isfinite(intrinsic).all() and intrinsic[0, 0] > 0
+                and intrinsic[1, 1] > 0
+                and np.allclose(intrinsic[2], [0.0, 0.0, 1.0])):
+            calibration[:] = [intrinsic]
+            ready.set()
+
+    subscription = client.node.create_subscription(
+        client.info_type, topic, receive, qos_profile_sensor_data
+    )
+    try:
+        if not ready.wait(timeout):
+            raise TimeoutError(
+                f"No valid camera calibration on {topic} within {timeout:g}s; "
+                "start the camera or set XNAVDP_CAMERA_INFO_TOPIC"
+            )
+        return calibration[0].copy()
+    finally:
+        client.node.destroy_subscription(subscription)
 
 
 def main() -> None:
@@ -28,14 +60,14 @@ def main() -> None:
         if args.health_only or args.requests == 0:
             return
 
-        intrinsic = np.array(
-            [
-                [430.0495910644531, 0.0, 417.44158935546875],
-                [0.0, 429.425048828125, 246.24346923828125],
-                [0.0, 0.0, 1.0],
-            ]
-        )
-        client.reset(intrinsic)
+        if client.health.get("initialized"):
+            client.attach_initialized_backend()
+            print("Using initialized XNavDP model; retaining backend calibration and history.")
+        else:
+            intrinsic = _wait_for_camera_intrinsic(client)
+            client.reset(intrinsic)
+            print("Initialized XNavDP model with live camera calibration:")
+            print(intrinsic)
         # Use the real independent ROS inputs; never inject synthetic /odom or
         # camera messages into the live robot's topics.
         deadline = time.monotonic() + 10

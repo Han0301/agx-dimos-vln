@@ -117,6 +117,15 @@ class XNavDPClient:
         if self.health.get('release') != EXPECTED_RELEASE or self.health.get('transport') != VERSION:
             raise ValueError(f'Unexpected XNavDP ROS2 backend: {self.health}')
 
+    def attach_initialized_backend(self):
+        """Use an existing model without changing calibration or model history."""
+        self.initialized = False
+        self.verify_backend()
+        if not self.health.get('initialized'):
+            raise RuntimeError('XNavDP model is not initialized; initialize it with camera calibration first')
+        self.initialized = True
+        return True
+
     def initialize(self, intrinsic):
         info = self.info_type()
         info.header.frame_id = 'camera_color_optical_frame'

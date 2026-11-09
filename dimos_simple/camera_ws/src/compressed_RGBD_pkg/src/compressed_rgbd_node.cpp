@@ -47,15 +47,25 @@ class LatestSlot
 public:
   void push(T value)
   {
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (value_) {
-      ++overwritten_;
+    // Releasing a last shared_ptr can free a full image. Move that work out
+    // of the mailbox lock so neither the callback nor consumer waits for it.
+    std::optional<T> retired;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (stopped_) {
+        return;
+      }
+      if (value_) {
+        retired = std::move(value_);
+        value_.reset();
+        ++overwritten_;
+      }
+      value_.emplace(std::move(value));
     }
-    value_ = std::move(value);
     ready_.notify_one();
   }
 
-  std::optional<T> take()
+  std::optional<T> take(uint64_t & overwritten)
   {
     std::unique_lock<std::mutex> lock(mutex_);
     ready_.wait(
@@ -63,25 +73,23 @@ public:
         return stopped_ || value_.has_value();
       });
     if (!value_) {
+      overwritten = 0;
       return std::nullopt;
     }
     auto value = std::move(value_);
     value_.reset();
+    // Associate the drop count with this take, without acquiring the same
+    // mutex a second time or counting a later producer overwrite.
+    overwritten = std::exchange(overwritten_, 0);
     return value;
-  }
-
-  uint64_t take_overwritten()
-  {
-    std::lock_guard<std::mutex> lock(mutex_);
-    auto count = overwritten_;
-    overwritten_ = 0;
-    return count;
   }
 
   void stop()
   {
-    std::lock_guard<std::mutex> lock(mutex_);
-    stopped_ = true;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      stopped_ = true;
+    }
     ready_.notify_one();
   }
 
@@ -196,9 +204,9 @@ public:
 private:
   void encode_loop()
   {
-    while (auto frame = input_.take()) {
+    uint64_t overwritten = 0;
+    while (auto frame = input_.take(overwritten)) {
       const auto & message = frame->message;
-      const auto overwritten = input_.take_overwritten();
       stats_.input_overwritten.fetch_add(overwritten, std::memory_order_relaxed);
       const auto started = std::chrono::steady_clock::now();
       std::vector<uint8_t> encoded;
@@ -228,8 +236,8 @@ private:
 
   void publish_loop()
   {
-    while (auto message = encoded_.take()) {
-      const auto overwritten = encoded_.take_overwritten();
+    uint64_t overwritten = 0;
+    while (auto message = encoded_.take(overwritten)) {
       stats_.output_overwritten.fetch_add(overwritten, std::memory_order_relaxed);
       const auto started = std::chrono::steady_clock::now();
       publisher_->publish(**message);
