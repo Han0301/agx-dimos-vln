@@ -5,7 +5,7 @@ from types import SimpleNamespace as NS
 
 import numpy as np
 import pytest
-from dimos.config import ROOT
+from dimos.core.config import ROOT
 from dimos.plugins.path_tracker.config import load_config
 from dimos.plugins.path_tracker.messages import decode_depth, decode_result
 from dimos.plugins.path_tracker.mpc import solve_mpc

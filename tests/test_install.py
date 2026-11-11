@@ -13,11 +13,11 @@ SOURCE = Path(__file__).resolve().parents[1] / "sh/setup/install.sh"
 @pytest.fixture
 def workspace(tmp_path):
     (tmp_path / "sh/setup").mkdir(parents=True)
-    (tmp_path / "dimos").mkdir()
+    (tmp_path / "sh/dependencies").mkdir()
     script = tmp_path / "sh/setup/install.sh"
     script.write_text(SOURCE.read_text())
-    (tmp_path / "dimos/pyproject.toml").write_text("")
-    (tmp_path / "dimos/requirements.lock").write_text("")
+    (tmp_path / "sh/dependencies/pyproject.toml").write_text("")
+    (tmp_path / "sh/dependencies/requirements.lock").write_text("")
     return tmp_path
 
 
@@ -160,10 +160,13 @@ def test_default_installs_tracker_and_allows_explicit_trim(workspace):
 
 
 def test_default_plan_includes_d455_body_and_tracker(workspace):
+    before = sorted(str(p.relative_to(workspace)) for p in workspace.rglob("*"))
     result = invoke(workspace, '--dry-run')
     assert result.returncode == 0, result.stderr
-    for name in ('realsense2_camera', 'compressed_RGBD_pkg', 'go2', 'path_tracker'):
+    assert 'Ubuntu 24.04 aarch64' in result.stdout
+    for name in ('realsense2_camera', 'compressed_RGBD_pkg', 'go2', 'path_tracker', 'agent'):
         assert name in result.stdout
+    assert before == sorted(str(p.relative_to(workspace)) for p in workspace.rglob("*"))
 
 
 def test_incompatible_venv_is_selected_for_backup_without_extra_flags(workspace):
@@ -212,7 +215,9 @@ def test_agent_dependencies_are_selectable_without_starting_models(workspace, se
     assert result.returncode == 0, result.stderr
     import shlex
     install_line = next(line for line in result.stdout.splitlines() if "--constraint" in line)
-    assert any(part.endswith(f"dimos[{expected}]") for part in shlex.split(install_line))
+    parts = shlex.split(install_line)
+    assert parts[parts.index("-e") + 1] == f"{workspace}/sh/dependencies[{expected}]"
+    assert parts[parts.index("--constraint") + 1] == str(workspace / "sh/dependencies/requirements.lock")
     assert not (workspace / ".venv").exists()
 
 
@@ -269,3 +274,20 @@ def test_runtime_bundle_published_only_after_validation(workspace, valid_hash, c
     assert (result.returncode == 0) == success, result.stderr
     assert (workspace / "camera_ws/vendor").exists() == success
     assert not list((workspace / "camera_ws").glob(".vendor.*"))
+
+
+def test_install_rejects_x86_before_installation(workspace):
+    tools = workspace / "tools"
+    tools.mkdir()
+    uname = tools / "uname"
+    uname.write_text('#!/usr/bin/env bash\nprintf "x86_64\\n"\n')
+    uname.chmod(0o755)
+    result = subprocess.run(
+        ["bash", str(workspace / "sh/setup/install.sh")],
+        env={**os.environ, "PATH": f"{tools}:{os.environ['PATH']}"},
+        capture_output=True, text=True, timeout=20,
+    )
+    assert result.returncode != 0
+    assert "requires aarch64" in result.stderr
+    assert not (workspace / ".venv").exists()
+    assert not (workspace / "camera_ws").exists()

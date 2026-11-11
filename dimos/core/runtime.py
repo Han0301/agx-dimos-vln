@@ -5,7 +5,7 @@ import logging
 import signal
 import threading
 
-log = logging.getLogger(__name__)
+log = logging.getLogger("dimos.runtime")
 REGISTRY = {
     "body": ("dimos.robot.unitree.go2.body_bridge", "Go2BodyBridge"),
 }

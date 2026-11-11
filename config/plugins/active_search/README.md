@@ -1,4 +1,6 @@
-# 主动找物
+# 主动找物工作流
+
+实现归属 `dimos/vln_task/search/`，由 VLN Task 调用。`dimos.plugins.active_search` 只保留旧导入和配置检查入口的兼容转调，不再保存独立任务逻辑。配置路径与字段保持兼容。
 
 `find_object` 先用 D455 当前帧检测目标。明确命中且深度有效时立即进入接近规划。有框但不确定时做一次视觉复核。目标未出现、候选不匹配或仍无法确认时换视角，检测结果无效时结束任务。
 
@@ -13,5 +15,5 @@
 命中但深度无效时，优先沿 bbox 方向靠近。使用 RGB-D 和 LiDAR 局部栅格选取 0.30–0.60 m 的安全短目标，并校验 XNavDP 路径。跟踪最多约 2 秒后停车取新帧复检。深度仍无效时用最新 bbox 更新短目标。候选消失或无法安全靠近时恢复扫视。网页 Stop 和任务取消都会停止当前运动。
 
 ```bash
-python -m dimos.plugins.active_search --check
+python -m dimos.vln_task.search --check
 ```

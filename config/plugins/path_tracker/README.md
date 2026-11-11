@@ -4,8 +4,9 @@
 
 ## 安装与启动
 
+在项目根目录执行：
+
 ```bash
-cd /home/deepvln/dimos_mininum
 # 一键配置整体环境：D455、本体、XNavDP 客户端与跟踪器
 bash sh/setup/install.sh
 

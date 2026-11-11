@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 import yaml
-from dimos.config import ROOT
+from dimos.core.config import ROOT
 from dimos.plugins.xnavdp.__main__ import load_test_config
 from dimos.plugins.xnavdp.client import (
     XNavDPClient,
@@ -37,7 +37,7 @@ def test_config_and_check_have_no_ros_imports():
 import sys
 from dimos.plugins.xnavdp.__main__ import main
 assert main(["--check"])==0
-for prefix in ("rclpy","cv2","unitree_webrtc_connect","dimos.robot","dimos.runtime"):
+for prefix in ("rclpy","cv2","unitree_webrtc_connect","dimos.robot","dimos.core.runtime"):
     assert not any(n==prefix or n.startswith(prefix+".") for n in sys.modules),prefix
 """
     result = subprocess.run(

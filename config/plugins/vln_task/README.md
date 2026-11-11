@@ -1,10 +1,10 @@
-# 独立 VLN 主 agent
+# VLN Task 上层应用
 
-入口为 `python -m dimos.plugins.vln_task`，配置为 `vln_task.yaml`，通过显式配置路径组合 LLM 和 VLM。相对配置路径以工作空间根目录解析，支持从外部目录使用绝对入口/配置启动。
+源码为 `dimos/vln_task/`，独立于基础插件。入口为 `python -m dimos.vln_task`，配置为 `vln_task.yaml`，通过显式配置路径组合 LLM 和 VLM。相对配置路径以工作空间根目录解析，支持从外部目录使用绝对入口/配置启动。
 
 ```bash
-python -m dimos.plugins.vln_task --check
-python -m dimos.plugins.vln_task --goal "描述红色物体的位置" --image path/to/image.jpg
+python -m dimos.vln_task --check
+python -m dimos.vln_task --goal "描述红色物体的位置" --image path/to/image.jpg
 ```
 
 每次 run 独立持有 goal、图像与消息历史。LLM 可调用独立模式的工具 inspect_image，工具结果回到同一会话，再由 LLM 回复。纯文字任务直接经 LLM；图像任务由 LLM 选择视觉工具。未知工具、非法参数、空输出或超过 max_steps 均失败。独立模式用于问答、任务理解和图像分析。整合模式通过下文的 profile 加载可见目标定位和路径预览技能。
@@ -14,19 +14,27 @@ python -m dimos.plugins.vln_task --goal "描述红色物体的位置" --image pa
 真实服务基准使用合成测试图，串行运行每组 1 次预热和 10 次正式采样，保留每次响应、错误及配置。百分位使用成功样本的 nearest rank；预热单独保存。
 
 ```bash
-python -m dimos.plugins.vln_task.benchmark --image path/to/shapes.jpg --output path/to/benchmark.json --samples 10 --warmup 1
+python -m dimos.vln_task.benchmark --image path/to/shapes.jpg --output path/to/benchmark.json --samples 10 --warmup 1
 ```
 
 基准中的颜色和左右位置检查针对红色左图形、蓝色右图形测试图。输入其他图像时，这项预置检查不适用。基准会临时启动随机回环端口的 Web，结束时清理自身进程资源。
+
+## 调用链与兼容
+
+`agent.py` 管理 LLM 工具调用；`find_object.py` 分派首帧结果；`search/` 组织扫视、定向靠近和复检；`perception.py` 负责检测、复核与定位；`preview.py` 组合路径和速度预览；`approach.py` 持续更新规划，`target_refresh.py` 管理接近中的目标刷新。`assembly.py` 装配客户端与跟踪器，`web.py` 提供模型预热及任务状态展示策略。
+
+LLM/VLM 只调用模型，XNavDP 只请求和校验路径，tracker 保留控制及停止保护。任务策略由 VLN Task 组织。`web_input/transport.py` 提供可注入 runner 的通用 HTTP、队列及取消接口。
+
+原 `dimos.plugins.vln_task` 与 `dimos.plugins.active_search` Python 路径保留为兼容入口，转到同一份上层实现；现有配置路径、参数、模型提示词、消息协议和启动脚本沿用原值。
 
 ## 整合路径预览
 
 `config/profiles/vln_preview.yaml` 引用任务、Web、XNavDP、tracker 和本体安装配置。相机或 bag 独立供数。Web 与 CLI 使用同一装配入口。
 
 ```bash
-python -m dimos.plugins.vln_task --profile config/profiles/vln_preview.yaml --check
+python -m dimos.vln_task --profile config/profiles/vln_preview.yaml --check
 source sh/env.sh
-python -m dimos.plugins.vln_task --profile config/profiles/vln_preview.yaml --goal "找当前画面里的白色垃圾桶，预览接近路径"
+python -m dimos.vln_task --profile config/profiles/vln_preview.yaml --goal "找当前画面里的白色垃圾桶，预览接近路径"
 bash sh/start_web_input.sh --profile config/profiles/vln_preview.yaml
 bash sh/run_rviz.sh
 ```

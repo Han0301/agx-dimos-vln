@@ -5,9 +5,9 @@ from types import SimpleNamespace
 
 import pytest
 import yaml
-from dimos.config import ROOT, load_config
+from dimos.core.config import ROOT, load_config
 from dimos.robot.unitree.go2.body_bridge import Go2BodyBridge
-from dimos.runtime import REGISTRY
+from dimos.core.runtime import REGISTRY
 
 
 def config():
@@ -57,7 +57,7 @@ def test_reject_bad_configuration(tmp_path, mutation):
 def test_check_imports_no_hardware_or_visualization():
     script = """
 import sys
-from dimos.cli import main
+from dimos.core.cli import main
 assert main(["--check"])==0
 for prefix in ("rclpy","unitree_webrtc_connect","cv2","rerun","langchain","open3d","dimos.robot","dimos.hardware"):
     assert not any(n==prefix or n.startswith(prefix+".") for n in sys.modules),prefix
@@ -143,14 +143,14 @@ def test_startup_logging_does_not_dump_sdk_packets():
 import logging
 import sys
 from types import ModuleType
-runtime = ModuleType("dimos.runtime")
+runtime = ModuleType("dimos.core.runtime")
 def run(*args, **kwargs):
     logging.info("SDK_PACKET_MUST_BE_HIDDEN")
     logging.warning("SDK_WARNING_MUST_REMAIN")
     logging.getLogger("dimos.runtime").info("APPLICATION_START_MUST_REMAIN")
 runtime.run = run
-sys.modules["dimos.runtime"] = runtime
-from dimos.cli import main
+sys.modules["dimos.core.runtime"] = runtime
+from dimos.core.cli import main
 assert main([]) == 0
 """
     result = subprocess.run(

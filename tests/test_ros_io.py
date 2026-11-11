@@ -10,7 +10,7 @@ pytest.importorskip("geometry_msgs.msg")
 from builtin_interfaces.msg import Time
 from geometry_msgs.msg import PoseStamped
 
-from dimos.config import ROOT, load_config
+from dimos.core.config import ROOT, load_config
 from dimos.robot.unitree.go2.body_bridge import Go2BodyBridge
 
 

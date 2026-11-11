@@ -2,7 +2,7 @@
 
 ## 目标和默认环境
 
-无参数执行 `bash sh/setup/install.sh`，配置 D455、C++ 压缩器、Go2、本地 XNavDP 客户端、path_tracker 及独立 agent 客户端。补齐系统依赖、增量构建相机，并将 Python 依赖安装到本工作空间 `.venv`；不兼容旧环境自动备份重建。X3 需要另外选择及提供官方 SDK；远端模型/GPU 环境不安装到本机。ROS/librealsense 运行时沿用 camera_ws/vendor。
+目标设备为 NVIDIA Jetson Orin AGX，系统为 Ubuntu 24.04 ARM64。无参数执行 `bash sh/setup/install.sh`，配置 D455、C++ 压缩器、Go2、本地 XNavDP 客户端、path_tracker 及独立 agent 客户端。补齐系统依赖、增量构建相机，并将 Python 依赖安装到本工作空间 `.venv`；不兼容旧环境自动备份重建。X3 需要另外选择及提供官方 SDK；远端模型/GPU 环境不安装到本机。ROS/librealsense 运行时沿用 camera_ws/vendor。
 
 安装与启动分开：依赖统一准备，模块独立启停。模型或跟踪插件退出不影响设备遥测，不增加消息总线或数据中转话题。
 
@@ -53,3 +53,28 @@ DDS 共用 `sh/xnavdp_ros2/`，远端 TCP 端口固定 7411。当前服务端为
 启动只替换同项目、同 ROS domain 的同模块旧实例，检查和健康查询保持只读。每个进程仅清理自己的资源，不全局 pkill，不重启设备或远端模型。XNavDP 推理推进共享模型历史，初始化/reset 必须显式选择。
 
 安装不进行相机采集、机器人连接、远端推理或运动。软件验收与实机链路分别判断；收到模型路径不代表已经形成可执行导航闭环。
+
+## Python 源码与安装目录
+
+文档中的项目路径以工作空间根目录为参考；入口根据自身位置定位资源。显式参数与构建工具的相对路径保持各自接口语义，路径规范见 [脚本约定](scripts.md#路径约定)。
+
+| 内容 | 归属 |
+| --- | --- |
+| 包标识与 `python -m dimos` 入口 | `dimos/__init__.py`、`dimos/__main__.py` |
+| 本体 CLI、配置校验与 ROS 生命周期 | `dimos/core/` |
+| Go2 通信实现、基础能力与上层任务 | `dimos/robot/`、`dimos/plugins/`、`dimos/vln_task/` |
+| 项目信息、依赖声明、命令与打包范围 | `sh/dependencies/pyproject.toml` |
+| 安装及验收使用的依赖版本约束 | `sh/dependencies/requirements.lock` |
+| 源码归档的附加文件清单 | `sh/dependencies/MANIFEST.in` |
+| 源码归档暂存与映射辅助 | `sh/dependencies/_build.py` |
+| 许可资料 | `sh/dependencies/licenses/` |
+
+`sh/dependencies/pyproject.toml` 通过相对路径 `../../dimos` 直接引用唯一源码，目录内不放源码链接或副本。`MANIFEST.in` 纳入版本约束与 `_build.py`；该辅助只在生成源码归档时，将源码暂存进发布树并调整归档内部映射，使归档可独立重建 wheel。改写归档元数据前解除硬链接，保持工作区原文件不变。构建产物不纳入版本管理。
+
+安装器从 `sh/dependencies/` 执行 editable 安装；环境验收分别检查该安装来源，以及实际包仍来自本工作空间 `dimos/__init__.py`。更新目录后在 Orin 通过原安装入口刷新安装元数据；只检查模式不修复旧环境。外部启动命令不变，内部实现使用 `dimos.core.*`，日志沿用原组件名称。
+
+## 上层任务与基础插件
+
+VLN Task 的执行实现位于 `dimos/vln_task/`，基础模型和控制能力位于 `dimos/plugins/`。Web 与 CLI 统一调用上层装配；找物策略、扫视序列、深度恢复、目标刷新及任务停距由上层组织。旧 Python 导入入口仅作兼容。
+
+`python -m dimos.vln_task` 为上层命令入口，配置继续使用 `config/plugins/vln_task/` 和现有 profiles。基础插件的消息接口、执行参数和启停方式沿用原契约。

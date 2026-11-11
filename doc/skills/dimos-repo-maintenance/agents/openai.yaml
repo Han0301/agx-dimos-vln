@@ -1,0 +1,4 @@
+interface:
+  display_name: "DimOS 仓库与插件规范"
+  short_description: "核对 DimOS 仓库分层、插件契约、兼容迁移与知识库，保持现有行为"
+  default_prompt: "使用 $dimos-repo-maintenance 核对当前 DimOS 系统的仓库与插件化规范，并按任务范围同步代码和知识库。"

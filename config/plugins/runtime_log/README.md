@@ -2,8 +2,9 @@
 
 在一个独立终端启动记录器，再在各自的终端按原命令启动模块。
 
+在项目根目录执行：
+
 ```bash
-cd /home/deepvln/dimos_mininum
 bash sh/start_log.sh --mode live
 ```
 

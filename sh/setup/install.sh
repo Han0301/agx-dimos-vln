@@ -134,7 +134,7 @@ RUNTIME_PY
 
 preflight() {
   info 'Workspace prerequisites'
-  [[ -f "$ROOT/dimos/pyproject.toml" && -f "$ROOT/dimos/requirements.lock" ]] || die 'incomplete DimOS source'
+  [[ -f "$ROOT/sh/dependencies/pyproject.toml" && -f "$ROOT/sh/dependencies/requirements.lock" ]] || die 'incomplete DimOS source'
   if ((dry_run)); then
     printf 'Target: Ubuntu 24.04 aarch64 / Python 3.12; runtime: %s/vendor\n' "$WS"
     if [[ -n "$runtime_archive" ]]; then
@@ -235,7 +235,7 @@ prepare_venv() {
     fi
   fi
   run env -u PYTHONPATH -u PYTHONHOME "${command[@]}" \
-    --constraint "$ROOT/dimos/requirements.lock" -e "$ROOT/dimos[$extras]"
+    --constraint "$ROOT/sh/dependencies/requirements.lock" -e "${ROOT}/sh/dependencies[$extras]"
 }
 sdk_ready() {
   local p="$WS/third_party/insta360_ros_driver"
@@ -382,7 +382,7 @@ import json, sys
 root = Path(sys.argv[1]).resolve()
 dist = metadata.distribution('dimos-mininum')
 direct = json.loads(dist.read_text('direct_url.json') or '{}')
-if (Path(unquote(urlparse(direct.get('url', '')).path)).resolve() != root / 'dimos'
+if (Path(unquote(urlparse(direct.get('url', '')).path)).resolve() != root / 'sh/dependencies'
         or not direct.get('dir_info', {}).get('editable')):
     raise SystemExit('DimOS editable installation points outside this workspace')
 import dimos
@@ -415,7 +415,7 @@ if sys.argv[2] in {'agent', 'all'}:
             raise SystemExit(f'Agent configuration check failed: {name}')
     print('PASS: independent agent dependencies and configs; no model connections')
 # Check installed constrained dependencies, including SDK transitive dependencies.
-for line in (root / 'dimos/requirements.lock').read_text().splitlines():
+for line in (root / 'sh/dependencies/requirements.lock').read_text().splitlines():
     if '==' not in line or line.startswith('#'):
         continue
     name, expected = line.split('==', 1)
@@ -513,7 +513,7 @@ for lib in re.findall(r"=> (/\S+)", sys.stdin.read()):
 readiness() {
   info 'Device readiness (not a live communication test)'
   ROOT="$ROOT" "$VENV/bin/python" - <<'PY'
-from dimos.config import load_config
+from dimos.core.config import load_config
 from dimos.robot.unitree.go2.body_bridge import read_aes_key
 from dimos.robot.unitree.go2.wired_link import WiredLink
 import os

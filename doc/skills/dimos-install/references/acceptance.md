@@ -28,8 +28,8 @@ bash sh/setup/install.sh --dry-run --camera all
 ## 软件检查覆盖
 
 - 前置环境：系统、架构、Python ABI、源码和匹配的 vendor。当前 `--check-only` 也检查安装器声明的系统构建依赖，缺失会失败。
-- venv：目录与 prefix 对应、Python 3.12、禁止系统 site-packages、editable 指向本项目。检查导入时移除会掩盖错误安装来源的 `PYTHONPATH`、`PYTHONHOME`。
-- Python：必需包及所选 extra 可导入，已安装的受约束依赖版本正确，`uv pip check` 或 `pip check` 通过。当前 `requirements.lock` 用作版本约束，不把它表述为带哈希的完整锁定安装。
+- venv：目录与 prefix 对应、Python 3.12、禁止系统 site-packages、editable 指向本项目 `sh/dependencies/`，实际包来自本项目 `dimos/__init__.py`。检查导入时移除会掩盖错误安装来源的 `PYTHONPATH`、`PYTHONHOME`。
+- Python：必需包及所选 extra 可导入，已安装的受约束依赖版本正确，`uv pip check` 或 `pip check` 通过。当前 `sh/dependencies/requirements.lock` 用作版本约束，不把它表述为带哈希的完整锁定安装。
 - ROS：`rclpy` 来源在本工作空间内；消息类及原生类型支持可加载；DDS 配置可解析。
 - 生命周期：使用 `config/empty.yaml`，禁用设备模块；设置超时、收集退出状态和日志。超时、非零退出、DDS/RTPS 原生错误均导致失败。发现错误后不得通过删除错误检测或吞日志制造通过。
 - 相机：用实际相机进程的系统 Python 检查 OpenCV、NumPy、ROS launch 和公共工具；包 prefix 在当前 `camera_ws/install`；动态库可解析；launch 描述可加载。X3 还需检查源码和安装区 SDK/JSON 一致。
@@ -38,7 +38,7 @@ XML 可解析不代表远端 DDS 服务已连通；`--show-args` 可加载不代
 
 ## 默认跟踪依赖
 
-无参数入口安装 `dimos[go2,path_tracker,agent]`，验证 NumPy、SciPy、PyYAML 位于本工作空间 .venv，执行无 ROS/设备的 MPC 求解，并检查 XNavDP/tracker 参数。默认 D455 系统依赖和相机增量构建一并完成。`--check-only` 只检查；`--dry-run` 只展示计划。不兼容或继承系统包的旧 venv 默认自动备份重建，不放宽隔离校验；兼容环境重复使用。
+无参数入口从 `sh/dependencies/` 安装 `go2,path_tracker,agent` extras，验证 NumPy、SciPy、PyYAML 位于本工作空间 .venv，执行无 ROS/设备的 MPC 求解，并检查 XNavDP/tracker 参数。默认 D455 系统依赖和相机增量构建一并完成。`--check-only` 只检查；`--dry-run` 只展示计划。不兼容或继承系统包的旧 venv 默认自动备份重建，不放宽隔离校验；兼容环境重复使用。
 
 ## 独立 agent 依赖
 

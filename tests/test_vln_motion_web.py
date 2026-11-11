@@ -11,7 +11,7 @@ from dimos.plugins.web_input.app import create_app
 @pytest.mark.parametrize("endpoint", ["stop", "task", "shutdown"])
 def test_motion_cancellation_reaches_tracker(endpoint, monkeypatch):
     from dimos.plugins.runtime_log import current_task_id
-    from dimos.plugins.web_input import app as module
+    from dimos.plugins.web_input import transport as module
 
     diagnostics = []
     monkeypatch.setattr(module, "event", lambda _, event, **fields:

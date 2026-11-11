@@ -4,7 +4,7 @@ import logging
 import math
 from contextlib import ExitStack
 
-from dimos.config import ROOT, load_config
+from dimos.core.config import ROOT, load_config
 
 
 def main(argv=None):
@@ -53,7 +53,7 @@ def main(argv=None):
         # The SDK logs every raw packet through the root logger at INFO.
         # Keep application lifecycle messages without enabling packet dumps.
         logging.getLogger("dimos").setLevel(logging.INFO)
-        from dimos.runtime import run
+        from dimos.core.runtime import run
 
         run(config, max_seconds=args.duration)
         return 0

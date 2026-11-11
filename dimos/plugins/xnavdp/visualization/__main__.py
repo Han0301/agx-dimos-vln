@@ -11,7 +11,7 @@ import threading
 import time
 from pathlib import Path
 
-from dimos.config import ROOT
+from dimos.core.config import ROOT
 from dimos.plugins.runtime_log import capture, event
 
 logger = logging.getLogger("dimos.plugins.xnavdp.visualization")

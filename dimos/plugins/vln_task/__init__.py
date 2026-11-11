@@ -1,1 +1,1 @@
-"""Standalone primary agent combining explicit LLM and VLM capabilities."""
+"""Compatibility namespace for dimos.vln_task."""

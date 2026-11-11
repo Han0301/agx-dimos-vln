@@ -1,1 +1,1 @@
-"""Bounded visual search across camera viewpoints."""
+"""Compatibility namespace for dimos.vln_task.search."""

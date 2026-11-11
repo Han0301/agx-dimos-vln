@@ -5,6 +5,7 @@
 | 主题 | 入口 |
 | --- | --- |
 | 安装和日常启动 | [项目 README](../README.md) |
+| 仓库维护、插件化与兼容迁移 | [dimos-repo-maintenance skill](skills/dimos-repo-maintenance/SKILL.md) |
 | VLN 实机、bag 预览和日志排查 | [vln-operations skill](skills/vln-operations/SKILL.md) |
 | 总体职责、数据流和插件目标 | [workspace.md](architecture/workspace.md) |
 | 当前已实现与待完成 | [progress.md](progress.md) |
@@ -14,6 +15,7 @@
 | 插件文件归属 | [plugins.md](architecture/plugins.md) |
 | 能力插件输入输出和生命周期 | [plugin-contracts.md](architecture/plugin-contracts.md) |
 | 安装维护流程 | [dimos-install skill](skills/dimos-install/SKILL.md) |
+| Python 依赖、构建文件与安装来源 | [源码与安装目录](architecture/workspace.md#python-源码与安装目录) |
 | 数据源维护流程 | [camera-sources skill](skills/camera-sources/SKILL.md) |
 | 基座参数和原生接口 | [配置说明](../config/README.md)、[interfaces.yaml](../config/interfaces.yaml) |
 | 独立跟踪与速度预览 | [path_tracker](../config/plugins/path_tracker/README.md) |
@@ -24,6 +26,7 @@
 ## 内容边界
 
 - 保留职责、接口、目录、依赖来源、操作入口、生命周期及可重复的验收要求。
+- 命令以工作空间根目录为参考，项目路径使用相对路径；不记录固定用户名或检出绝对路径。外部环境与凭据由配置或环境变量提供，Markdown 链接保持相对所在文档有效。
 - 进度只说明已实现、待实现和仍需完成的能力，不维护每次运行的数字或机器状态。
 - 不收录当天测试数量、临时 venv 操作、复制包文件经过、某次缺包清单、完整日志或排障流水账。这些不能作为项目当前状态保证。
 - 软件、设备、数据、推理与运动是不同验收层级；需要保留这种规则，而非每次验证过程。

@@ -11,7 +11,7 @@ description: 维护、规范化或评审 DimOS 最小通信项目的 sh/setup/in
 
 读取 `sh/setup/install.sh` 和根 `README.md`。涉及算法或模型依赖时，先核对 [工作空间架构](../../architecture/workspace.md) 的基座/插件边界。按本次改动选择补读：
 
-- Python 依赖：`dimos/pyproject.toml`、`dimos/requirements.lock`、`sh/env.sh`。
+- Python 依赖：`sh/dependencies/pyproject.toml`、`sh/dependencies/requirements.lock`、`sh/env.sh`。
 - 相机和 SDK：`camera_ws/README.md`、`camera_ws/sh/setup_local.bash`、驱动的 `CMakeLists.txt` 和所选相机 launch 文件。
 - DDS：`sh/xnavdp_ros2/dds_env.sh`、`client_dds.xml`。
 - 验收：[references/acceptance.md](references/acceptance.md) 和 `tests/test_install.py`。
@@ -20,10 +20,10 @@ description: 维护、规范化或评审 DimOS 最小通信项目的 sh/setup/in
 
 ## 保留的项目约定
 
-1. **统一入口。** 安装、SDK 准备、相机编译和环境检查由 `sh/setup/install.sh` 组织。保留 `--dry-run` 与 `--check-only`；不要要求用户额外运行另一套验证脚本。驱动 CMake、配置和测试保留在各自目录，不把源码副本塞入安装器。
+1. **统一入口。** 沿用 `sh/setup/install.sh` 组织安装、SDK 准备、相机编译和环境检查，安装脚本保留在 `sh/setup/`。保留 `--dry-run` 与 `--check-only`；不要要求用户额外运行另一套验证脚本。驱动 CMake、配置和测试保留在各自目录，不把源码副本塞入安装器。
 2. **可以重复运行。** 默认模式补齐系统及 Python 依赖、执行 D455/C++ 压缩增量构建并检查；系统包安装可请求 sudo 凭据。`--check-only` 不安装或重建；`--dry-run` 不执行安装操作。两者允许查询状态，临时检查文件及时清理，避免持久修改被检查环境。
-3. **环境独立。** 安装目标是本项目 `.venv`，校验 Python 版本、prefix 和 editable 来源。新 venv 不继承系统 site-packages；调用者已激活的环境不能改变安装目标。默认自动识别不兼容环境并备份重建；`--recreate` 可强制重建，保留备份忽略规则。只检查模式不得迁移环境。
-4. **明确运行时来源。** 当前目标为 Ubuntu 24.04 ARM64、Python 3.12、ROS Jazzy。ROS、librealsense 与兼容库来自匹配的 `camera_ws/vendor`。首次安装可用 `--runtime-archive` 和 `--runtime-sha256` 从单独分发的本地归档恢复，校验失败不发布 vendor。若任务要求改变此部署方案，同步修改实现、依赖和验收要求。
+3. **环境独立。** 安装目标是本项目 `.venv`，校验 Python 版本、prefix、editable 来源 `sh/dependencies/` 及实际包来源 `dimos/__init__.py`。新 venv 不继承系统 site-packages；调用者已激活的环境不能改变安装目标。默认自动识别不兼容环境并备份重建；`--recreate` 可强制重建，保留备份忽略规则。只检查模式不得迁移环境。
+4. **明确运行时来源。** 当前目标设备为 NVIDIA Jetson Orin AGX，系统为 Ubuntu 24.04 ARM64、Python 3.12、ROS Jazzy。ROS、librealsense 与兼容库来自匹配的 `camera_ws/vendor`。首次安装可用 `--runtime-archive` 和 `--runtime-sha256` 从单独分发的本地归档恢复，校验失败不发布 vendor。若任务要求改变此部署方案，同步修改实现、依赖和验收要求。
 5. **按相机准备依赖。** 默认 D455；X3/all 才需要 CameraSDK。D455 launch 依赖 `insta360_ros_driver` 的公共 Python 工具，因此不能跳过整个包；使用 `BUILD_INSTA360_CAMERA=OFF` 保留公共工具，跳过 X3 专用程序。切回 X3/all 时显式启用开关。
 6. **SDK 来源可追溯。** 支持用户提供的目录、压缩包或下载地址；不臆造专有 SDK 地址。检查 SDK 完整性、目标架构与所请求的 SHA256。下载采用完成后才发布的缓存文件；提取前校验归档路径。不能依赖尚未生成的 `install/` 来完成首次 SDK 准备。
 7. **维持最小依赖。** 修改依赖时同步项目声明与版本约束，核实 wired ICE 使用的 aiortc/aioice 兼容关系。ROS 构建使用预期的系统 Python 和本地 vendor 环境，避免调用者 venv 污染构建。NavDP 模型与可视化栈独立部署。已实现的 Go2、path_tracker 与 agent 客户端依赖由默认无参数入口统一安装，检查本 .venv 来源和 MPC 求解；XNavDP 远端模型不安装在本机。插件独立启停不等于要求用户分别安装依赖。高级裁剪可使用 --camera/--plugin，日常文档统一提供无参数命令。

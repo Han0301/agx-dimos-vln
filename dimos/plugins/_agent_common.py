@@ -170,3 +170,7 @@ class HTTPModel:
         response = self.http.get(self.config["base_url"] + path)
         response.raise_for_status()
         return response.json()
+
+
+class TaskCancelled(RuntimeError):
+    """A task was cancelled; results arriving later must be discarded."""

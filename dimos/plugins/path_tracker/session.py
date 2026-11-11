@@ -6,7 +6,7 @@ import signal
 import time
 from pathlib import Path
 
-from dimos.config import ROOT
+from dimos.core.config import ROOT
 
 
 def identity(pid):

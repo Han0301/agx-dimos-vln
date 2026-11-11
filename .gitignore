@@ -22,3 +22,7 @@ data/log/
 *.tar.*
 /camera_ws/.vendor.*/
 /camera_ws/upload/
+
+# Python packaging outputs.
+/sh/dependencies/build/
+/sh/dependencies/dist/

@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 import yaml
-from dimos.config import ROOT
+from dimos.core.config import ROOT
 
 
 def test_rviz_layout_uses_trajectory_and_result_display():

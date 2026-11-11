@@ -11,7 +11,7 @@ from pathlib import Path
 
 import yaml
 
-from dimos.config import ROOT
+from dimos.core.config import ROOT
 
 from .client import XNavDPClient, stamp_ns, validate_result
 

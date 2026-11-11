@@ -1,6 +1,6 @@
 # DimOS Mininum
 
-面向 Go2 的最小视觉语言导航工作空间。Go2 本体通信、D455/X3 采集、bag 回放和上层插件独立启停。VLN 支持文件问答、目标定位、多视角找物、路径与速度预览，以及显式开启的 Go2 探索和跟踪。默认基座关闭运动，实机端到端验收进度见 [当前进度](doc/progress.md)。
+面向 Go2 的最小视觉语言导航工作空间。Go2 本体通信、D455/X3 采集、bag 回放和上层任务独立启停。VLN 支持文件问答、目标定位、多视角找物、路径与速度预览，以及显式开启的 Go2 探索和跟踪。默认基座关闭运动，实机端到端验收进度见 [当前进度](doc/progress.md)。
 
 ## 架构
 
@@ -19,22 +19,35 @@ XNavDP ──→ 已校验的任务路径 ──→ 内置 tracker ──→ /cm
 | 模块 | 职责 |
 | --- | --- |
 | `web_input`、`vln_task` | 网页接收文字和可选图片。主 Agent 管理任务历史、工具调用、期限及状态 |
-| `llm`、`vlm` | 分别调用 Ollama 与 DashScope。Web 启动时预热 LLM，VLM 由当前进程按需调用 |
-| `active_search` | 实机根据 D455 和 Go2 LiDAR 选可达探索点，停车复核。回放用录制视角 |
+| `llm`、`vlm` | 分别调用 Ollama 与 DashScope。VLN Task 的 Web 适配启动时预热 LLM，VLM 由当前进程按需调用 |
+| `vln_task/search` | 实机原地扫视；目标匹配但深度无效时沿目标方向安全短步靠近并复检。回放用录制视角 |
 | `xnavdp` | 用原始 RGB 时间戳提交点目标，关联并校验服务端的原生轨迹与结果 |
 | `path_tracker` | 用路径、最新里程计、原始深度和可选障碍输入计算速度。实机配置发布 `/cmd_vel` |
 | `runtime_log` | 独立前台终端，按实际启动的模块归档输出、ROS 日志与阶段耗时 |
+
+上层任务位于 `dimos/vln_task/`，基础能力位于 `dimos/plugins/`；旧 VLN/search 命名空间仅作兼容转调，执行实现只维护一份。
 
 模块接口、时序与参数见 [工作空间架构](doc/architecture/workspace.md)、[插件契约](doc/architecture/plugin-contracts.md) 和 [插件索引](config/plugins/README.md)。
 
 ## 安装与检查
 
-目标环境为 Ubuntu 24.04 ARM64、Python 3.12、ROS Jazzy。首次在新检出的项目根目录执行以下命令。运行时归档及其 SHA256 由现有部署单独提供。
+目标设备为 NVIDIA Jetson Orin AGX，系统为 Ubuntu 24.04 ARM64、Python 3.12、ROS Jazzy。以下安装命令在目标设备执行。首次检出项目：
+
+```bash
+git clone https://github.com/Han0301/agx-dimos-vln.git dimos_mininum
+cd dimos_mininum
+```
+
+后续文档命令均以工作空间根目录为执行位置，项目文件路径相对该根目录，不要求固定用户名或检出位置。运行时归档及其 SHA256 由现有部署单独提供。首次安装：
 
 ```bash
 bash sh/setup/install.sh --runtime-archive /path/to/dimos-runtime.tar.gz \
   --runtime-sha256 SHA256_OF_ARCHIVE
 ```
+
+`sh/setup/install.sh` 是整个工作空间的一键安装、编译和环境检查入口。`sh/start.sh` 仅启动本体通信。实际安装会先检查 ARM64 与 Ubuntu 24.04，非目标平台在安装前停止。
+
+更新已有部署的目录布局后，在 Orin 重新运行该安装入口，刷新 editable 安装来源和命令入口；`--check-only` 只检查，不修复旧安装。依赖与构建资料统一位于 [sh/dependencies/](sh/dependencies/)，文件用途及安装来源见 [目录规范](doc/architecture/workspace.md#python-源码与安装目录)。
 
 安装器校验归档后恢复 `camera_ws/vendor/`。默认补齐 Ubuntu 系统包，在本项目构建 D455/C++ 压缩器和独立 `.venv`，并检查 Go2、XNavDP、tracker 和 Agent 客户端。运行时已就位后可直接执行。
 
@@ -88,7 +101,7 @@ bash sh/record_bag.sh /odom /camera/camera/color/image_raw /camera/camera/aligne
 
 ## 网页与日志
 
-在本机打开 [VLN 网页](http://127.0.0.1:5556/)，用 `curl -fsS http://127.0.0.1:5556/health` 查看 LLM 预热状态。日志终端等待后续模块启动，Ctrl+C 结束采集，记录保存在 `data/log/session_*/`。按 `task_id` 查 Agent 调用和耗时，用 XNavDP 日志的 `stamp_ns` 对照 tracker 日志的 `request_stamp_ns`。场景检查与排查步骤见 [vln-operations skill](doc/skills/vln-operations/SKILL.md)，日志文件与探针见 [运行日志说明](config/plugins/runtime_log/README.md)。
+在运行 Web 服务的 Orin 本机打开 [VLN 网页](http://127.0.0.1:5556/)，默认仅监听回环地址；用 `curl -fsS http://127.0.0.1:5556/health` 查看 LLM 预热状态。日志终端等待后续模块启动，Ctrl+C 结束采集，记录保存在 `data/log/session_*/`。按 `task_id` 查 Agent 调用和耗时，用 XNavDP 日志的 `stamp_ns` 对照 tracker 日志的 `request_stamp_ns`。场景检查与排查步骤见 [vln-operations skill](doc/skills/vln-operations/SKILL.md)，日志文件与探针见 [运行日志说明](config/plugins/runtime_log/README.md)。
 
 ## 独立模块测试
 
@@ -98,7 +111,7 @@ bash sh/record_bag.sh /odom /camera/camera/color/image_raw /camera/camera/aligne
 source sh/env.sh
 python -m dimos.plugins.llm --prompt "把找杯子拆成几个步骤"
 python -m dimos.plugins.vlm --image path/to/image.jpg --prompt "描述图片"
-python -m dimos.plugins.vln_task --goal "红色物体在哪里" --image path/to/image.jpg
+python -m dimos.vln_task --goal "红色物体在哪里" --image path/to/image.jpg
 bash sh/start_web_input.sh                 # 文字与图片上传模式
 bash sh/start_xnavdp.sh                   # 只读健康查询
 bash sh/start_tracker.sh --output-only    # 订阅现有结果，终端显示速度
@@ -110,7 +123,8 @@ VLM 默认直接连接 DashScope，复用 `~/.config/dimos/vlm_orin.yaml` 中的
 
 | 路径 | 内容 |
 | --- | --- |
-| `dimos/` | Go2 通信基座、Python 包与独立插件源码 |
+| `dimos/` | Python 包入口；`core/` 放基座启动与配置，`robot/` 放本体通信，`plugins/` 放基础能力，`vln_task/` 放上层任务 |
+| `sh/dependencies/` | Python 构建声明、依赖版本约束、源码归档清单与构建辅助、许可资料；通过现有安装入口使用 |
 | `camera_ws/` | 相机驱动、C++ 压缩、launch、vendor 及数据源入口 |
 | `config/` | 基座和原生接口参数，`plugins/` 放插件参数，`profiles/` 放组合配置 |
 | `sh/` | 公共启动和环境入口，`setup/` 管安装，`xnavdp_ros2/` 管 DDS |

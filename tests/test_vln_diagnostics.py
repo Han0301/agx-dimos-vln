@@ -20,7 +20,9 @@ def observe_events(monkeypatch, module):
 def test_detection_logs_original_and_final_verdicts_with_depth_statistics(monkeypatch):
     from dimos.plugins.vln_task import preview
 
-    events = observe_events(monkeypatch, preview)
+    from dimos.vln_task import perception
+
+    events = observe_events(monkeypatch, perception)
     frame = NS(
         jpeg=b"frame", stamp_ns=100, wait_ms=1, depth_gap_ms=2, odom_gap_ms=3,
         depth=np.full((100, 100), 2.), k=(100, 0, 50, 0, 100, 50, 0, 0, 1),
