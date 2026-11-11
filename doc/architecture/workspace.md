@@ -78,3 +78,23 @@ DDS 共用 `sh/xnavdp_ros2/`，远端 TCP 端口固定 7411。当前服务端为
 VLN Task 的执行实现位于 `dimos/vln_task/`，基础模型和控制能力位于 `dimos/plugins/`。Web 与 CLI 统一调用上层装配；找物策略、扫视序列、深度恢复、目标刷新及任务停距由上层组织。旧 Python 导入入口仅作兼容。
 
 `python -m dimos.vln_task` 为上层命令入口，配置继续使用 `config/plugins/vln_task/` 和现有 profiles。基础插件的消息接口、执行参数和启停方式沿用原契约。
+
+## 架构图维护
+
+图源与导出文件统一放在 `doc/architecture/diagrams/`，README 与飞书使用同一套调用关系说明。
+
+| 内容 | 预览 | 可编辑源 |
+| --- | --- | --- |
+| VLN Task 上层与基础插件 | [PNG](diagrams/vln_modules.png)、[SVG](diagrams/vln_modules.svg) | [DOT](diagrams/vln_modules.dot) |
+| 找物、扫视、深度恢复与接近 | [PNG](diagrams/object_search.png)、[SVG](diagrams/object_search.svg) | [DOT](diagrams/object_search.dot) |
+
+流程变化时先改 DOT，再同步导出 PNG/SVG 和相关说明。图中分支决策归 VLN Task，tracker 保留 MPC、碰撞检查和数据过期停车；图示不作为已完成 Orin 实机验收的证明。
+
+以下命令在工作空间根目录执行。Graphviz 与 Noto Sans CJK SC 字体仅用于文档制图，不属于运行依赖。
+
+```bash
+for diagram_name in vln_modules object_search; do
+  dot -Tsvg "doc/architecture/diagrams/$diagram_name.dot" -o "doc/architecture/diagrams/$diagram_name.svg"
+  dot -Tpng -Gdpi=96 -Gsize='8.125,100!' "doc/architecture/diagrams/$diagram_name.dot" -o "doc/architecture/diagrams/$diagram_name.png"
+done
+```

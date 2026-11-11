@@ -8,6 +8,7 @@
 | 仓库维护、插件化与兼容迁移 | [dimos-repo-maintenance skill](skills/dimos-repo-maintenance/SKILL.md) |
 | VLN 实机、bag 预览和日志排查 | [vln-operations skill](skills/vln-operations/SKILL.md) |
 | 总体职责、数据流和插件目标 | [workspace.md](architecture/workspace.md) |
+| 上层调用链、找物流程与图源维护 | [架构图](architecture/workspace.md#架构图维护) |
 | 当前已实现与待完成 | [progress.md](progress.md) |
 | 实时相机与 bag 数据源 | [data-sources.md](architecture/data-sources.md) |
 | 高频入口与脚本子目录 | [scripts.md](architecture/scripts.md) |

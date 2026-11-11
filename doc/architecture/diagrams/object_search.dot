@@ -1,0 +1,47 @@
+digraph Search {
+  graph [rankdir=TB, bgcolor="white", pad="0.16", nodesep="0.32", ranksep="0.34", splines=polyline, fontname="Noto Sans CJK SC", fontsize=23, label="自由探索与找物\n全部分支由 VLN Task 决策", labelloc=t, labeljust=c];
+  node [shape=box, style="rounded,filled", fillcolor="#EDF4FF", color="#8EB0E1", penwidth=1.5, fontname="Noto Sans CJK SC", fontsize=19, fontcolor="#173457", margin="0.12,0.10"];
+  edge [color="#61738A", penwidth=1.5, arrowsize=0.8, fontname="Noto Sans CJK SC", fontsize=16, fontcolor="#506078"];
+
+  start [label="获取当前同步观测\nRGB-D / odom"];
+  det [label="① 上层调用 VLM\n检测 / 歧义时复核"];
+  match [shape=diamond, style=filled, fillcolor="#FFF6DC", color="#D5B762", label="确认匹配？", margin="0.07,0.02"];
+  depth [shape=diamond, style=filled, fillcolor="#FFF6DC", color="#D5B762", label="深度有效？", margin="0.07,0.02"];
+  locate [label="深度定位 → 计算接近点\n按用户或配置的停距"];
+  follow [label="上层持续请求 XNavDP\n校验后交 tracker 接近\n上层负责目标刷新"];
+  arrived [label="到达指定停距\n清计划 → 输出零速", fillcolor="#E9F6EF", color="#7AB79A"];
+
+  short [label="沿框方向选安全短目标\n0.30–0.60 m\nRGB-D ＋ 新鲜 LiDAR"];
+  safe [shape=diamond, style=filled, fillcolor="#FFF6DC", color="#D5B762", label="有安全短目标？", margin="0.06,0.02"];
+  step [label="调用 XNavDP / 校验路径\n通过后 tracker 短步\n最多跟踪约 2 s", fillcolor="#E9F6EF", color="#7AB79A"];
+  fresh [label="先停车，再取新同步帧\n返回 ① 检测与复核", fillcolor="#E9F6EF", color="#7AB79A"];
+
+  remain [shape=diamond, style=filled, fillcolor="#FFF6DC", color="#D5B762", label="还有未扫方向？", margin="0.06,0.02"];
+  sweep [label="调用 tracker 原地转向\n首帧 0°，间隔 60°\n60/120/180/240/300°", fillcolor="#E9F6EF", color="#7AB79A"];
+  scanview [label="停车 → 获取新同步帧\n返回 ① 检测与复核", fillcolor="#E9F6EF", color="#7AB79A"];
+  end [label="结束并报告结果\n未找到 / 未取得有效深度", fillcolor="#F0F2F5", color="#A5AFBA"];
+  note [shape=plain, style="", label="实机运动前检查观测新鲜度与碰撞。\n取消 / 超时 / 异常：清计划并输出零速。\npreview / bag 等待外部新视角，不主动发速度。", fontsize=16, fontcolor="#506078"];
+
+  start -> det -> match [weight=50];
+  match -> depth [label="是", weight=50];
+  match -> remain [label="未见 / 不符\n或仍无法确认", minlen=3];
+  depth -> locate [label="是"];
+  locate -> follow -> arrived;
+  depth -> short [label="否", weight=50];
+  short -> safe [weight=50];
+  safe -> step [label="是", weight=50];
+  step -> fresh [label="已跟踪"];
+  step -> remain [label="无有效路径", style=dashed];
+  safe -> remain [label="无安全短目标"];
+  remain -> sweep [label="是"];
+  sweep -> scanview;
+  remain -> end [label="否"];
+  {rank=same; depth;locate}
+  {rank=same; short;follow}
+  {rank=same; safe;arrived}
+  {rank=same; step;remain}
+  {rank=same; fresh;sweep}
+  {rank=same; scanview;end}
+  end -> note [style=invis];
+  scanview -> note [style=invis];
+}

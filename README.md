@@ -27,7 +27,18 @@ XNavDP ──→ 已校验的任务路径 ──→ 内置 tracker ──→ /cm
 
 上层任务位于 `dimos/vln_task/`，基础能力位于 `dimos/plugins/`；旧 VLN/search 命名空间仅作兼容转调，执行实现只维护一份。
 
-模块接口、时序与参数见 [工作空间架构](doc/architecture/workspace.md)、[插件契约](doc/architecture/plugin-contracts.md) 和 [插件索引](config/plugins/README.md)。
+上层调用基础插件的关系如下。图示对应当前代码，实机验收进度仍见[当前进度](doc/progress.md)。
+
+![VLN Task 上层与基础插件调用关系](doc/architecture/diagrams/vln_modules.png)
+
+<details>
+<summary>展开找物与自由探索流程</summary>
+
+![VLN Task 组织检测、搜索、深度恢复和接近](doc/architecture/diagrams/object_search.png)
+
+</details>
+
+两张图的矢量版、可编辑源文件及维护方式见[架构图维护](doc/architecture/workspace.md#架构图维护)。模块接口、时序与参数见 [工作空间架构](doc/architecture/workspace.md)、[插件契约](doc/architecture/plugin-contracts.md) 和 [插件索引](config/plugins/README.md)。
 
 ## 安装与检查
 

@@ -1,0 +1,38 @@
+digraph Agent {
+  graph [rankdir=TB, bgcolor="white", pad="0.18", nodesep="0.34", ranksep="0.40", splines=polyline, fontname="Noto Sans CJK SC", fontsize=23, label="VLN Task 模块调用链", labelloc=t, labeljust=c, compound=true, newrank=true];
+  node [shape=box, style="rounded,filled", fillcolor="#EDF4FF", color="#8EB0E1", penwidth=1.5, fontname="Noto Sans CJK SC", fontsize=19, fontcolor="#173457", margin="0.14,0.12"];
+  edge [color="#61738A", penwidth=1.5, arrowsize=0.8, fontname="Noto Sans CJK SC", fontsize=16, fontcolor="#506078"];
+
+  web [label="Web transport · 基础插件\nHTTP / 队列 / 取消", fillcolor="#E9F6EF", color="#7AB79A"];
+  subgraph cluster_upper {
+    graph [label="VLN Task｜独立上层\ndimos/vln_task/", fontsize=20, fontcolor="#215291", style="rounded,filled", fillcolor="#F5F9FF", color="#9DBCE6", penwidth=1.6, margin=15];
+    policy [label="Web 适配\n预热 / 状态解释 → 注入 Web"];
+    agent [label="Agent\n历史 / 期限 / 工具执行"];
+    find [label="find_object 找物工作流\n搜索 / 复核 / 深度定位\n扫视调用 tracker 转向"];
+    approach [label="接近策略\n刷新目标 / 持续规划 / 停距"];
+    policy -> agent;
+    agent -> find [label="执行工具"];
+    find -> approach [label="确认并定位"];
+  }
+  subgraph cluster_basic {
+    graph [label="基础能力插件", fontsize=20, fontcolor="#28704D", style="rounded,filled", fillcolor="#F6FBF8", color="#9ACCB1", penwidth=1.6, margin=14];
+    node [fillcolor="#E9F6EF",color="#7AB79A"];
+    llm [label="LLM 客户端\n消息输入 → 助手消息"];
+    vlm [label="VLM 客户端\n图像＋提示 → 模型文本"];
+    xnav [label="XNavDP 客户端\n点目标 → 原生路径校验"];
+    tracker [label="Path tracker\nMPC / 碰撞 / 过期停车"];
+    llm -> vlm -> xnav -> tracker [style=invis, weight=30];
+  }
+  {rank=same; agent;llm}
+  {rank=same; find;vlm}
+  {rank=same; approach;xnav}
+  web -> policy [label="任务 → runner"];
+  agent -> llm [dir=both, label="请求 / 回复", minlen=1];
+  find -> vlm [dir=both, label="调用 / 返回", minlen=1];
+  approach -> xnav [dir=both, label="请求 / 结果", minlen=1];
+  approach -> tracker [label="提交有效路径"];
+  go2 [label="Go2 本体通信 · core ＋ robot\n转发速度 / 运动开关 / 超时保护", fillcolor="#F0F2F5", color="#A5AFBA"];
+  tracker -> go2 [label="/cmd_vel"];
+  note [shape=plain, style="", label="上层决定何时搜索、复核、更新目标与停止。\n到达 / 取消 / 超时：清计划并输出零速。\npreview 只计算路径与一次速度；实机显式启用运动。", fontsize=16, fontcolor="#506078"];
+  go2 -> note [style=invis];
+}
