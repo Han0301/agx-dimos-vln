@@ -15,6 +15,7 @@ bash sh/setup/install.sh --dry-run --camera all
 | 模式 | 应有行为 | 不应被误报的结果 |
 | --- | --- | --- |
 | 默认运行 | 默认补齐系统包，构建 D455/C++ 压缩，安装 Go2/path_tracker/agent 客户端并检查插件配置 | 不能只安装 Python 就报告整个工作空间可用 |
+| `--runtime-archive`、`--runtime-sha256` | 校验本地归档后恢复缺失的 vendor；失败保留原工作区 | 不覆盖已有 vendor；不将校验失败或不完整归档作为运行时 |
 | `--check-only` | 检查当前软件；可使用并清理临时目录 | 不执行 apt、pip 安装、SDK 下载、构建或 venv 重建 |
 | `--dry-run` | 展示计划，可读取现状 | 不创建 venv、下载缓存或构建产物；不表示前置条件已满足 |
 | `--recreate` | 将原 venv 改名备份后创建独立环境 | 不直接删除已有 venv，不声称备份可免验证地跨位置运行 |

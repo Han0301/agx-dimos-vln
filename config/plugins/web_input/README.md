@@ -8,11 +8,11 @@ bash sh/start_web_input.sh --profile config/profiles/vln_preview.yaml
 
 配置为 `web_input.yaml`，默认监听 `127.0.0.1:5556`，网页接受文字及可选 JPEG/PNG。每个任务独立绑定上传图。单 worker 调用主 agent，队列和终态记录有容量上限；达到记录上限时优先淘汰最早的终态记录。
 
-首页沿用 simple 的 VLN 页面。使用 `vln_preview` 配置时，RealSense RGB 和深度面板读取现有 ROS 相机或 bag 数据。Go2 和 Frontier 面板保留等待提示。Navigate 与 Stop 分别提交和取消任务。多视角找物显示搜索、复核、路径就绪或搜索结束未找到。
+首页提供 VLN Navigation 界面。使用 `vln_preview` 配置时，RealSense RGB 和深度面板读取现有 ROS 相机或 bag 数据。Go2 和 Frontier 面板保留等待提示。Navigate 与 Stop 分别提交和取消任务。多视角找物显示搜索、复核、路径就绪或搜索结束未找到。
 
 | 接口 | 输入与结果 |
 | --- | --- |
-| `GET /` | simple 的 VLN Navigation 页面 |
+| `GET /` | VLN Navigation 页面 |
 | `GET /health` | 当前进程 worker、队列和运行状态。profile 启用 LLM 预加载时包含 `llm_warmup` |
 | `POST /tasks`、`POST /navigate` | JSON goal、可选 image_base64，返回 202 和 task_id |
 | `POST /navigate` | 网页 multipart 表单，字段为 goal 和可选 image，返回 success 和 task_id |

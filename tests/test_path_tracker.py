@@ -88,7 +88,7 @@ def test_result_transform_mpc_and_original_expiry(caplog):
     tracker.update_odom((10.1, 2.0, 0), "world")
     now[0] = 102.0
     tracker.update_odom((10.1, 2.0, 0), "world")
-    assert tracker.command()[0] < v  # same simple linear decay
+    assert tracker.command()[0] < v  # linear decay
     now[0] = 103.0
     tracker.update_odom((10.1, 2.0, 0), "world")
     assert tracker.command() == (0, 0, "expired")
@@ -158,7 +158,7 @@ def test_collision_keeps_simple_behavior():
     tracker.plan_result(tracker.generation, result)
     tracker.update_depth(np.full((10, 10), 0.1))
     assert tracker.command() == (0, 0, "collision_depth")
-    # Preserve simple: no new depth-age timeout was added in this extraction.
+    # Depth age alone does not expire the command.
     tracker.update_depth(np.ones((10, 10)))
     assert tracker.command()[2] == "tracking"
 

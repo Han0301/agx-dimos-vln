@@ -29,7 +29,14 @@ XNavDP ──→ 已校验的任务路径 ──→ 内置 tracker ──→ /cm
 
 ## 安装与检查
 
-目标环境为 Ubuntu 24.04 ARM64、Python 3.12、ROS Jazzy。在项目根目录执行。
+目标环境为 Ubuntu 24.04 ARM64、Python 3.12、ROS Jazzy。首次在新检出的项目根目录执行以下命令。运行时归档及其 SHA256 由现有部署单独提供。
+
+```bash
+bash sh/setup/install.sh --runtime-archive /path/to/dimos-runtime.tar.gz \
+  --runtime-sha256 SHA256_OF_ARCHIVE
+```
+
+安装器校验归档后恢复 `camera_ws/vendor/`。默认补齐 Ubuntu 系统包，在本项目构建 D455/C++ 压缩器和独立 `.venv`，并检查 Go2、XNavDP、tracker 和 Agent 客户端。运行时已就位后可直接执行。
 
 ```bash
 bash sh/setup/install.sh --dry-run
@@ -37,7 +44,15 @@ bash sh/setup/install.sh
 bash sh/setup/install.sh --check-only
 ```
 
-默认准备本项目 `.venv`、D455/C++ 压缩器、Go2 和插件依赖。ROS、librealsense 及兼容库从 `camera_ws/vendor` 提供，X3 需单独准备官方 SDK。LLM 与 XNavDP 服务由服务器侧维护。离线安装、X3 和依赖裁剪见 [安装 skill](doc/skills/dimos-install/SKILL.md)。
+在已有可用运行时的机器上，从项目根目录导出归档和校验值。解引用库链接，以便在另一台机器恢复。
+
+```bash
+tar --dereference --exclude='vendor/compat/usr/share/doc/*/changelog.Debian.gz' \
+  -czf /tmp/dimos-runtime.tar.gz -C camera_ws vendor
+sha256sum /tmp/dimos-runtime.tar.gz
+```
+
+归档、构建产物、虚拟环境、bag 和运行日志均由 Git 忽略。离线安装可用 `DIMOS_WHEELHOUSE=/path/to/wheels bash sh/setup/install.sh --offline`，目标机需预装 Ubuntu 系统包。X3 另需官方 SDK。Go2 和 DashScope 凭据在目标机本地配置，LLM 与 XNavDP 服务由服务器侧维护。详见 [安装 skill](doc/skills/dimos-install/SKILL.md)。
 
 ## 实机 Go2
 

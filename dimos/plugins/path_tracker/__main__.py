@@ -1,4 +1,4 @@
-"""Independent simple MPC tracker using minimum's native inputs."""
+"""MPC tracker for native ROS inputs."""
 
 import argparse
 import importlib

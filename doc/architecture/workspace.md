@@ -32,7 +32,7 @@ Go2 或 bag ──────────────────────�
 | 本体通信 | Go2 连接、odom/点云/状态/TF，运动开关、限速与指令超时 | config/base.yaml；sh/start.sh |
 | 数据源 | D455/X3、原始 bag、C++ 压缩；不启动算法 | camera_ws/config/、config/bag.yaml；相机/录制/播放/压缩各自入口 |
 | XNavDP 请求 | 健康查询、构造点目标、检查原生结果；不发速度 | config/plugins/xnavdp/；sh/start_xnavdp.sh |
-| 跟踪 | result 接收、参考位姿补偿、simple MPC 与碰撞检查；默认只预览速度 | config/plugins/path_tracker/；sh/start_tracker.sh |
+| 跟踪 | result 接收、参考位姿补偿、MPC 与碰撞检查；默认只预览速度 | config/plugins/path_tracker/；sh/start_tracker.sh |
 | RViz | 显示路径、候选、点云，辅助节点只随显示启动 | sh/run_rviz.sh |
 | Web 与 VLN Agent | 文件问答、实时观测、工具调用与任务状态；装配 VLM、LLM、active_search 与 XNavDP | config/plugins/；sh/start_web_input.sh |
 | 实机装配 | Web 内运行 tracker，持续跟踪已校验的任务路径 | config/profiles/vln_motion.yaml；sh/start_vln_motion.sh |
@@ -46,7 +46,7 @@ DDS 共用 `sh/xnavdp_ros2/`，远端 TCP 端口固定 7411。当前服务端为
 
 跟踪器将 result 中参考时刻的 base_link 路径恢复到世界坐标，再结合当前 odom 变换到当前本体坐标，交给 MPC 生成速度。深度检查读取最新本地原始对齐深度，不绕经 PNG 压缩/解压。候选与评分保留校验，不重新选路。
 
-时序、异常和 simple 保留边界见 [跟踪器说明](../../config/plugins/path_tracker/README.md)。通信测试的前方 3 米目标会随请求变化，不等同固定目标导航。
+时序和异常处理见 [跟踪器说明](../../config/plugins/path_tracker/README.md)。通信测试的前方 3 米目标会随请求变化，不等同固定目标导航。
 
 ## 生命周期和维护
 

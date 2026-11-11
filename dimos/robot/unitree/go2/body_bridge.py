@@ -1,5 +1,5 @@
 # Copyright 2025-2026 Dimensional Inc. Licensed under the Apache License, Version 2.0.
-"""Native ROS body bridge with the dimos_simple topic types and TF frames."""
+"""Native ROS body bridge for Go2 topic types and TF frames."""
 
 import json
 import logging

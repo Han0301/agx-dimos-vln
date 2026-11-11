@@ -18,7 +18,7 @@ bash sh/play_bag.sh --bag data/bags/有效bag目录
 
 ## 环境与维护
 
-ROS Jazzy、librealsense、兼容库在 vendor，已有安装产物在 install，源码在 third_party/src。迁移机器需恢复匹配架构的运行时；X3 另需用户取得的官方 CameraSDK。bag 模式另需参数指定的 rosbag2 环境，仅播放器子进程加载它。
+ROS Jazzy、librealsense、兼容库在 vendor，已有安装产物在 install，源码在 third_party/src。新检出通过 [项目安装入口](../README.md#安装与检查) 校验并恢复 ARM64 运行时归档，再用当前源码构建。X3 另需用户取得的官方 CameraSDK。bag 模式另需参数指定的 rosbag2 环境，仅播放器子进程加载它。
 
 项目根目录统一安装/检查：
 

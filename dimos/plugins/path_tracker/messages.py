@@ -1,4 +1,4 @@
-"""ROS/JSON adapters; algorithms consume plain arrays, as in simple."""
+"""ROS/JSON adapters for algorithms that consume plain arrays."""
 
 import json
 import math
@@ -88,7 +88,7 @@ def decode_result(data):
     trajectory = np.asarray(item["trajectory"], dtype=float)
     candidates = np.asarray(item["all_trajectory"], dtype=float)
     values = np.asarray(item["all_values"], dtype=float)
-    # The same result shape/finite checks as simple's pointgoal_step.
+    # Validate the shape and finiteness of the point-goal result.
     if (
         trajectory.ndim != 3
         or trajectory.shape[0] != 1

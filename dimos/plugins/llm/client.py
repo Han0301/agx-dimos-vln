@@ -1,4 +1,4 @@
-"""Ollama chat protocol used by simple's primary agent."""
+"""Ollama chat client for the VLN agent."""
 
 import copy
 import logging

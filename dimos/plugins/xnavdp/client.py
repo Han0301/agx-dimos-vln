@@ -28,7 +28,7 @@ def stamp_ns(header):
 
 
 def relative_goal_xy(position, quaternion, goal):
-    """Same planar local-to-world conversion as simple's pointgoal_step."""
+    """Convert a planar goal from robot-local to world coordinates."""
     values = [*position, *quaternion, *goal]
     if len(position) != 2 or len(quaternion) != 4 or len(goal) != 2:
         raise ValueError("expected XY position, XYZW quaternion and XY local goal")

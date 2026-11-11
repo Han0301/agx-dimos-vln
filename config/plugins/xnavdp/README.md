@@ -39,7 +39,7 @@ trajectory_frame 和 goal_frame 为 base_link；robot_pos/robot_quat 是服务�
 
 错误仅通过 result 返回 status=error、request_stamp_ns、error，不发布伪路径。客户端按整数 request_stamp_ns 关联，等待两类输出，检查坐标、长度、评分、有限数值和世界目标可重建性；迟到结果不匹配当前请求。超时失败不 reset 共享模型。
 
-路径是局部空间路径，不是可直接执行的时序轨迹。独立 [path_tracker](../path_tracker/README.md) 直接读取 result 内的选中路径和参考位姿，结合当前 odom 恢复轨迹，沿用 simple MPC/碰撞检查；默认只在终端预览速度，不创建 /cmd_vel 发布者。XNavDP 请求入口不自动启动跟踪器。
+路径是局部空间路径，不是可直接执行的时序轨迹。独立 [path_tracker](../path_tracker/README.md) 直接读取 result 内的选中路径和参考位姿，结合当前 odom 恢复轨迹，执行 MPC 和碰撞检查；默认只在终端预览速度，不创建 /cmd_vel 发布者。XNavDP 请求入口不自动启动跟踪器。
 
 服务端源码位于 guest@10.10.10.56:/home/guest/xnavdp_ros2_topics/server.py，启动脚本为同目录 run_server.sh；模型 worker 及 GPU 环境归服务端维护，不复制进基座依赖。服务端与客户端协议变更必须同步，通信层仅使用两个结果输出，不保留平行旧结果接口。
 

@@ -1,4 +1,4 @@
-"""simple's planning/control loops, detached from inference and blueprint ownership."""
+"""Planning and control loops for the path tracker."""
 
 import logging
 import math
@@ -285,7 +285,7 @@ class Tracker:
                 event(log, "tracker_path_rejected", request_stamp_ns=result.stamp_ns,
                       reason=input_error, **self._input_fields())
                 return False
-            # Match simple: only move forward in observation timestamps.
+            # Reject out-of-order observation timestamps.
             if result.stamp_ns <= self.last_stamp:
                 if result.stamp_ns != self.last_rejected_stamp:
                     log.warning(
@@ -355,7 +355,7 @@ class Tracker:
             current = pose_from_odom(self.odom)
         planning_started = time.perf_counter()
         captured = result.pose
-        # Exact simple planning transform and solver call.
+        # Transform the path before solving the MPC problem.
         local_path = (
             result.trajectory[0] @ captured[1].T + captured[0] - current[0]
         ) @ current[1]
@@ -429,7 +429,7 @@ class Tracker:
             try:
                 self.plan_result(generation, result, trace=trace)
             except Exception as exc:
-                # simple retains the previous plan until its original expiry.
+                # Retain the previous plan until its original expiry.
                 log.exception(
                     "MPC planning failed request_stamp_ns=%d", result.stamp_ns
                 )
@@ -438,7 +438,7 @@ class Tracker:
                       reason=str(exc)[:300])
 
     def command(self):
-        """Called under cv; mirrors simple _tick without debug path publication."""
+        """Advance control while holding the condition lock."""
         if not self.running:
             return 0.0, 0.0, "idle"
         if self.turn_goal is not None:

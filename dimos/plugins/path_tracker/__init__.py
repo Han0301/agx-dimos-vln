@@ -1,1 +1,1 @@
-"""Independent simple trajectory execution on minimum native topics."""
+"""Trajectory tracking on native ROS topics."""

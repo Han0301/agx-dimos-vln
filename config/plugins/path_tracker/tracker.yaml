@@ -9,7 +9,7 @@ topics:
   costmap: null
   cmd_vel: /cmd_vel
 depth_scale: 1000.0
-# Effective simple XNavDP settings (desired_v uses mpc_v_max in its blueprint).
+# XNavDP tracking speed and MPC parameters.
 controller:
   tick_rate_hz: 10.0
   mpc_horizon: 15

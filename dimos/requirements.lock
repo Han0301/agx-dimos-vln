@@ -1,4 +1,4 @@
-# Ubuntu 24.04 ARM64 / Python 3.12. Pins copied from the working dimos_simple environment.
+# DimOS Mininum constraints for Ubuntu 24.04 ARM64 / Python 3.12.
 # Minimal base constraints plus explicitly selected plugin constraints.
 aioice==0.10.2
 aiortc==1.14.0
@@ -45,11 +45,20 @@ wasmtime==41.0.0
 Werkzeug==3.1.5
 wsproto==1.3.2
 
-# Optional path_tracker MPC (same SciPy version as simple).
+# Optional path_tracker MPC.
 scipy==1.17.0
 
 # Independent VLM/LLM/task/Web clients and local VLM gateway.
+annotated-doc==0.0.6
+annotated-types==0.8.0
+anyio==4.14.2
+httpcore==1.0.9
 httpx==0.28.1
+opentelemetry-api==1.45.2
+pydantic==2.13.5
+pydantic_core==2.46.5
+starlette==1.10.0
+typing-inspection==0.4.5
 Pillow==12.3.0
 fastapi==0.162.4
 python-multipart==0.0.32

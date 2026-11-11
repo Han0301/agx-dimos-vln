@@ -13,7 +13,6 @@
 | 可选 XNavDP RViz | [visualization.md](architecture/visualization.md) |
 | 插件文件归属 | [plugins.md](architecture/plugins.md) |
 | 能力插件输入输出和生命周期 | [plugin-contracts.md](architecture/plugin-contracts.md) |
-| simple 迁移边界 | [simple-migration.md](architecture/simple-migration.md) |
 | 安装维护流程 | [dimos-install skill](skills/dimos-install/SKILL.md) |
 | 数据源维护流程 | [camera-sources skill](skills/camera-sources/SKILL.md) |
 | 基座参数和原生接口 | [配置说明](../config/README.md)、[interfaces.yaml](../config/interfaces.yaml) |

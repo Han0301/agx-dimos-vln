@@ -1,11 +1,11 @@
 [build-system]
-requires = ["setuptools>=77"]
+requires = ["setuptools==84.2.1"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "dimos-mininum"
 version = "0.1.0"
-description = "Minimal Go2 ROS communication using the dimos_simple topic contracts"
+description = "DimOS Mininum for Go2 ROS communication and visual-language navigation"
 license = "Apache-2.0"
 license-files = ["licenses/LICENSE", "licenses/NOTICE.md"]
 requires-python = ">=3.12"

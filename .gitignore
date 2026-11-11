@@ -10,3 +10,15 @@ camera_ws/log/
 .ruff_cache/
 data/bags/
 data/log/
+
+# Local recordings and deployment bundles.
+*.bag
+*.bag.*
+*.db3
+*.db3-*
+*.mcap
+*.mcap.*
+*.tar
+*.tar.*
+/camera_ws/.vendor.*/
+/camera_ws/upload/

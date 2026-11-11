@@ -10,7 +10,7 @@
 - 已移除算法托管与图像解码转发遗留，基座只负责本体通信。
 - 参数分层、独立环境与统一安装检查入口；低频脚本归入子目录。
 - 独立 RViz 视图沿用 XNavDP 显示样式，trajectory/result 直连，点云与 TF 辅助仅在可视化入口启用。
-- 独立 path_tracker 订阅原生结果/odom/深度；沿用 simple MPC 与碰撞检查，默认终端速度预览。默认安装准备跟踪依赖。
+- 独立 path_tracker 订阅原生结果/odom/深度；使用 MPC 与碰撞检查，默认终端速度预览。默认安装准备跟踪依赖。
 - VLM 默认由调用进程直连 DashScope，原生 HTTP 配置可选。VLM、LLM、主 Agent 和 Web 支持独立文件测试，提供显式期限、队列、取消和配置检查。
 - VLN profile 统一加载 CLI/Web、LLM/VLM、原生 RGB-D 观测、XNavDP 点目标和一次 MPC 速度预览。各插件保留独立入口。
 - Web 启动时准备相机缓存、XNavDP ROS 端点和 Ollama 模型预热，按阶段记录等待与请求耗时。

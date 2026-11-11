@@ -10,7 +10,7 @@ test:
 
 goal:
   mode: relative
-  xy: [3.0, 0.0]       # 沿用 simple：每次请求时，机器人当前朝向前方 3 米
+  xy: [3.0, 0.0]       # 每次请求时，机器人当前朝向前方 3 米
 
 initialization:
   reset_if_needed: false

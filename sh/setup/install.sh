@@ -8,12 +8,16 @@ PYTHON=/usr/bin/python3.12
 camera=d455
 plugin=all
 check_only=0 dry_run=0 recreate=0 install_system=1 install_system_requested=0 skip_build=0 offline=0 sdk_requested=0
+runtime_archive='' runtime_sha256='' runtime_stage=''
 sdk_dir="${CAMERA_SDK_DIR:-}"
 sdk_archive="${CAMERA_SDK_ARCHIVE:-}"
 sdk_url="${CAMERA_SDK_URL:-}"
 sdk_sha256="${CAMERA_SDK_SHA256:-}"
 temp=''
-cleanup() { [[ -z "$temp" ]] || rm -rf -- "$temp"; }
+cleanup() {
+  [[ -z "$temp" ]] || rm -rf -- "$temp"
+  [[ -z "$runtime_stage" ]] || rm -rf -- "$runtime_stage"
+}
 trap cleanup EXIT
 trap 'printf "ERROR: stopped at line %s (exit %s).\n" "$LINENO" "$?" >&2' ERR
 usage() {
@@ -21,6 +25,8 @@ usage() {
 Usage: bash sh/setup/install.sh [options]
   --plugin none|path_tracker|agent|all  Local dependencies (default: all)
   --camera d455|x3|all|none  Cameras to prepare/check (default: d455)
+  --runtime-archive PATH  Restore a local TAR bundle containing vendor/
+  --runtime-sha256 HEX   Required SHA256 for the runtime archive
   --sdk-dir PATH           Extracted Insta360 CameraSDK (X3/all)
   --sdk-archive PATH       Official CameraSDK ZIP/TAR archive (X3/all)
   --sdk-url URL            Download CameraSDK from a supplied URL (X3/all)
@@ -38,7 +44,7 @@ Install missing system dependencies (sudo may prompt), back up incompatible venv
 install into this workspace .venv, incrementally build cameras and verify.
 Re-run the same command after installation to repair dependencies and check.
 Target: Ubuntu 24.04 ARM64, Python 3.12, bundled camera_ws/vendor ROS Jazzy.
-Restore a matching camera_ws runtime bundle if vendor/ is missing.
+If vendor/ is missing, provide --runtime-archive and --runtime-sha256.
 USB permissions, device data and Go2 connectivity are reported separately.
 This command never starts cameras, connects to Go2 or sends motion commands.
 HELP
@@ -52,6 +58,8 @@ while (($#)); do
   case "$1" in
     --plugin) plugin="${2:?missing plugin selection}"; shift 2;;
     --camera) camera="${2:?missing camera selection}"; shift 2;;
+    --runtime-archive) runtime_archive="${2:?missing runtime archive}"; shift 2;;
+    --runtime-sha256) runtime_sha256="${2:?missing runtime SHA256}"; shift 2;;
     --sdk-dir) sdk_requested=1; sdk_dir="${2:?missing SDK directory}"; shift 2;;
     --sdk-archive) sdk_requested=1; sdk_archive="${2:?missing SDK archive}"; shift 2;;
     --sdk-url) sdk_requested=1; sdk_url="${2:?missing SDK URL}"; shift 2;;
@@ -77,20 +85,72 @@ fi
 [[ -z "$sdk_sha256" || "$sdk_sha256" =~ ^[[:xdigit:]]{64}$ ]] || die 'invalid SDK SHA256'
 ((offline == 0)) || [[ -z "$sdk_url" ]] || die '--offline conflicts with SDK URL'
 
+if [[ -n "$runtime_archive" || -n "$runtime_sha256" ]]; then
+  ((check_only == 0)) || die '--check-only does not restore the runtime'
+  [[ -n "$runtime_archive" && "$runtime_sha256" =~ ^[[:xdigit:]]{64}$ ]] ||
+    die '--runtime-archive requires --runtime-sha256 with a 64-digit SHA256'
+fi
+
+runtime_ready() {
+  [[ -f "$1/ros/jazzy/lib/python3.12/site-packages/rclpy/__init__.py" &&
+     -d "$1/compat/opt/ros/jazzy" ]] &&
+    [[ -x "$1/compat/opt/ros/jazzy/bin/ros2" || -x "$1/ros/jazzy/bin/ros2" ]]
+}
+
+restore_runtime() {
+  runtime_ready "$WS/vendor" && return 0
+  [[ ! -e "$WS/vendor" && ! -L "$WS/vendor" ]] ||
+    die "incomplete $WS/vendor; move it aside before restoring the runtime"
+  info 'Restore bundled ROS runtime'
+  runtime_stage="$(mktemp -d "$WS/.vendor.XXXXXX")"
+  env -u PYTHONPATH -u PYTHONHOME "$PYTHON" - "$runtime_archive" "$runtime_sha256" "$runtime_stage" <<'RUNTIME_PY'
+from hashlib import file_digest
+from pathlib import Path, PurePosixPath
+import sys
+import tarfile
+
+archive, expected, stage = sys.argv[1:]
+
+def vendor_member(member, destination):
+    path = PurePosixPath(member.name)
+    if path.parts[:1] != ("vendor",) or ".." in path.parts:
+        raise ValueError(f"Unexpected runtime archive path: {member.name}")
+    return tarfile.data_filter(member, destination)
+
+try:
+    with Path(archive).open("rb") as source:
+        if file_digest(source, "sha256").hexdigest() != expected.lower():
+            raise ValueError("runtime archive SHA256 mismatch")
+        source.seek(0)
+        with tarfile.open(fileobj=source, mode="r:*") as bundle:
+            bundle.extractall(stage, filter=vendor_member)
+except (OSError, ValueError, tarfile.TarError) as error:
+    raise SystemExit(f"ERROR: {error}")
+RUNTIME_PY
+  runtime_ready "$runtime_stage/vendor" || die 'runtime archive is missing ROS Jazzy or the compatibility overlay'
+  mv -T --no-clobber -- "$runtime_stage/vendor" "$WS/vendor"
+  runtime_ready "$WS/vendor" || die 'could not publish the restored runtime'
+}
+
 preflight() {
   info 'Workspace prerequisites'
   [[ -f "$ROOT/dimos/pyproject.toml" && -f "$ROOT/dimos/requirements.lock" ]] || die 'incomplete DimOS source'
   if ((dry_run)); then
     printf 'Target: Ubuntu 24.04 aarch64 / Python 3.12; runtime: %s/vendor\n' "$WS"
+    if [[ -n "$runtime_archive" ]]; then
+      printf '  Restore bundled ROS runtime from %q after SHA256 verification.\n' "$runtime_archive"
+    fi
     return
   fi
   [[ "$(uname -m)" == aarch64 ]] || die 'bundled runtime requires aarch64'
   local ID VERSION_ID
   . /etc/os-release
   [[ "$ID" == ubuntu && "$VERSION_ID" == 24.04 ]] || die 'bundled runtime requires Ubuntu 24.04'
-  [[ -d "$WS/vendor/ros/jazzy/lib/python3.12/site-packages" &&
-     -d "$WS/vendor/compat/opt/ros/jazzy" ]] ||
-    die 'ROS runtime missing: restore a matching camera_ws deployment bundle; see camera_ws/README.md'
+  if ! runtime_ready "$WS/vendor"; then
+    [[ -n "$runtime_archive" ]] ||
+      die 'ROS runtime missing: supply --runtime-archive and --runtime-sha256; see README.md'
+    restore_runtime
+  fi
 }
 system_dependencies() {
   info 'System dependencies'
@@ -160,7 +220,13 @@ prepare_venv() {
   local -a command
   if command -v uv >/dev/null 2>&1; then
     command=(uv pip install --python "$VENV/bin/python")
-    ((offline == 0)) || command+=(--offline)
+    if ((offline)); then
+      command+=(--offline)
+      if [[ -n "${DIMOS_WHEELHOUSE:-}" ]]; then
+        [[ -d "$DIMOS_WHEELHOUSE" ]] || die 'DIMOS_WHEELHOUSE must be a directory'
+        command+=(--no-index --find-links "$DIMOS_WHEELHOUSE")
+      fi
+    fi
   else
     command=("$VENV/bin/python" -m pip install)
     if ((offline)); then

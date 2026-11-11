@@ -214,3 +214,58 @@ def test_agent_dependencies_are_selectable_without_starting_models(workspace, se
     install_line = next(line for line in result.stdout.splitlines() if "--constraint" in line)
     assert any(part.endswith(f"dimos[{expected}]") for part in shlex.split(install_line))
     assert not (workspace / ".venv").exists()
+
+
+def make_runtime_archive(workspace, *, complete=True, unsafe=False, include_files=True):
+    archive = workspace / "runtime.tar"
+    with tarfile.open(archive, "w") as handle:
+        for name in ("vendor/ros/jazzy/lib/python3.12/site-packages",
+                     "vendor/compat/opt/ros/jazzy"):
+            if not complete and name.startswith("vendor/compat"):
+                continue
+            entry = tarfile.TarInfo(name)
+            entry.type = tarfile.DIRTYPE
+            handle.addfile(entry)
+        if include_files:
+            for name in ("vendor/ros/jazzy/lib/python3.12/site-packages/rclpy/__init__.py",
+                         "vendor/compat/opt/ros/jazzy/bin/ros2"):
+                if not complete and name.startswith("vendor/compat"):
+                    continue
+                entry = tarfile.TarInfo(name)
+                entry.mode = 0o755
+                handle.addfile(entry)
+        if unsafe:
+            entry = tarfile.TarInfo("vendor/escape")
+            entry.type = tarfile.SYMTYPE
+            entry.linkname = "/tmp"
+            handle.addfile(entry)
+    return archive
+
+
+def test_runtime_archive_dry_run_is_read_only(workspace):
+    result = invoke(workspace, "--dry-run", "--runtime-archive", "runtime.tar",
+                    "--runtime-sha256", "a" * 64)
+    assert result.returncode == 0, result.stderr
+    assert "Restore bundled ROS runtime" in result.stdout
+    assert not (workspace / "camera_ws").exists()
+
+
+@pytest.mark.parametrize("valid_hash,complete,unsafe,include_files,success", [
+    (True, True, False, True, True), (False, True, False, True, False),
+    (True, False, False, True, False), (True, True, True, True, False),
+    (True, True, False, False, False),
+])
+def test_runtime_bundle_published_only_after_validation(workspace, valid_hash, complete, unsafe, include_files, success):
+    from hashlib import sha256
+
+    archive = make_runtime_archive(workspace, complete=complete, unsafe=unsafe, include_files=include_files)
+    checksum = sha256(archive.read_bytes()).hexdigest() if valid_hash else "0" * 64
+    (workspace / "camera_ws").mkdir()
+    result = subprocess.run(
+        ["bash", "-c", functions(workspace) +
+         f'runtime_archive="{archive}"; runtime_sha256="{checksum}"; restore_runtime'],
+        capture_output=True, text=True, timeout=20,
+    )
+    assert (result.returncode == 0) == success, result.stderr
+    assert (workspace / "camera_ws/vendor").exists() == success
+    assert not list((workspace / "camera_ws").glob(".vendor.*"))
