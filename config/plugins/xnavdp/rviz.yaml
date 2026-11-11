@@ -1,0 +1,2 @@
+# Optional visualization runtime; does not alter base or inference parameters.
+ros_setup: "${HOME}/ros2_jazzy/install/setup.bash"

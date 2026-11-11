@@ -1,0 +1,4 @@
+plugin: active_search
+min_translation_m: 0.12
+min_rotation_deg: 8.0
+max_target_shift_m: 0.55

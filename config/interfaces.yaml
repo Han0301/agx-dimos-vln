@@ -1,0 +1,120 @@
+# Interface specification only; no ROS resources created.
+version: 1
+base:
+  publish:
+    /odom:
+      type: geometry_msgs/msg/PoseStamped
+      qos: best_effort_volatile
+      frame: world
+      stamp: ROS time at robot message receipt
+      meaning: base_link pose in world; no velocity or covariance
+    /lidar:
+      type: sensor_msgs/msg/PointCloud2
+      qos: reliable_volatile
+      frame: world
+      fields:
+      - x
+      - y
+      - z
+      unit: metre
+    /go2/lowstate:
+      type: std_msgs/msg/String
+      qos: best_effort_volatile
+      format: native SDK message serialized as JSON
+    /tf:
+      type: tf2_msgs/msg/TFMessage
+      frames:
+      - world->base_link
+      - base_link->camera_link
+      camera_internal_tf: published_only_by_RealSense_driver
+  subscribe:
+    /cmd_vel:
+      type: geometry_msgs/msg/Twist
+      frame: base_link
+      components:
+      - linear.x
+      - linear.y
+      - angular.z
+      units:
+      - metre_per_second
+      - metre_per_second
+      - radian_per_second
+      behavior: ignored when body.allow_motion is false; timeout sends zero
+  services:
+    /go2/standup: std_srvs/srv/Trigger
+    /go2/liedown: std_srvs/srv/Trigger
+    /go2/balance_stand: std_srvs/srv/Trigger
+camera_ws:
+  /camera/camera/color/image_raw/compressed:
+    type: sensor_msgs/msg/CompressedImage
+    encoding: JPEG
+    stamp: preserved from camera_ws
+  /camera/camera/aligned_depth_to_color/image_raw/compressed:
+    type: sensor_msgs/msg/CompressedImage
+    encoding: PNG_uint16
+    alignment: colour_image_pixels
+    unit: raw_uint16_depth_with_device_scale (D455 normally 0.001 metre_per_unit)
+  /realsense_camera_info:
+    type: sensor_msgs/msg/CameraInfo
+    source: RealSense_native_color_CameraInfo_direct_remap
+    frame: camera_color_optical_frame
+xnavdp:
+  subscribe:
+    /camera/camera/color/image_raw/compressed: sensor_msgs/msg/CompressedImage
+    /camera/camera/aligned_depth_to_color/image_raw/compressed: sensor_msgs/msg/CompressedImage
+    /odom: geometry_msgs/msg/PoseStamped
+    /realsense_camera_info: sensor_msgs/msg/CameraInfo
+    /xnavdp/point_goal: geometry_msgs/msg/PoseStamped
+  publish:
+    /xnavdp/trajectory: nav_msgs/msg/Path
+    /xnavdp/result: std_msgs/msg/String (JSON)
+  services:
+    /xnavdp/health: std_srvs/srv/Trigger
+    /xnavdp/reset: std_srvs/srv/Trigger
+  constraints:
+    goal_frame: same_world_frame_as_odom
+    goal_stamp: RGB_observation_stamp
+    sensor_gap_warning_ms: 150
+    over_warning_threshold: current_server_warns_and_still_runs
+    sensor_match_order: request_stamp_to_odom_to_RGB_to_depth
+    result_correlation: request_stamp_ns equals goal RGB observation stamp; trajectory
+      header uses same integer nanoseconds
+    path: base_link spatial path; transform with result robot_pos/robot_quat before
+      any future world tracking
+    reset: explicit_only_when_no_other_task_owns_model_history
+    trajectory_frame: base_link (model-native local coordinates)
+    result_json: status, request_stamp_ns, trajectory[1,H,3], all_trajectory[1,N,H,3],
+      all_values[1,N], robot_pos[3], robot_quat[4], goal[2], trajectory_frame, goal_frame,
+      world_frame, sensor stamps and matching gaps
+    error: status=error, request_stamp_ns, error; no trajectory published
+vlm:
+  qwen3_local:
+    method: POST
+    path: /v1/image-inference-base64
+    request:
+      image_base64: JPEG_base64
+      prompt: string
+      max_new_tokens: integer
+      temperature: number
+      top_p: number
+    response:
+      status: success_or_error
+      response: string
+    existing_python_interface: query(image, query, **kwargs) -> str
+    json_interface: query_json(image, query) -> dict
+    rule: model_output_requires_consumer_validation_before_use
+
+path_tracker:
+  subscribe:
+    /xnavdp/result: std_msgs/msg/String (existing v3 JSON)
+    /odom: geometry_msgs/msg/PoseStamped
+    /camera/camera/aligned_depth_to_color/image_raw: sensor_msgs/msg/Image
+    /lidar: sensor_msgs/msg/PointCloud2 (optional)
+  output:
+    default: terminal_velocity_preview_only
+    configured_motion_output: /cmd_vel (geometry_msgs/msg/Twist)
+  constraints:
+    output_only: creates_no_cmd_vel_publisher
+    algorithms: extracted_simple_MPC_MotionPlan_collision_veto
+    timing: monotonic_control_and_plan_expiry_as_simple
+    reference: result_pose_to_world_then_current_odom_base

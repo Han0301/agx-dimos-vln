@@ -1,0 +1,4 @@
+plugin: vlm
+backend: dashscope
+credentials_file: ~/.config/dimos/vlm_orin.yaml
+timeout_s: 30.0

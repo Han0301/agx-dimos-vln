@@ -1,0 +1,5 @@
+plugin: vln_task
+llm_config: config/plugins/llm/llm.yaml
+vlm_config: config/plugins/vlm/vlm.yaml
+max_steps: 4
+timeout_s: 120.0

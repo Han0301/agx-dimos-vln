@@ -1,0 +1,29 @@
+plugin: path_tracker
+# Preview only: print final velocities; do not create any command publisher.
+output_only: true
+topics:
+  result: /xnavdp/result
+  odom: /odom
+  depth: /camera/camera/aligned_depth_to_color/image_raw
+  lidar: /lidar
+  costmap: null
+  cmd_vel: /cmd_vel
+depth_scale: 1000.0
+# Effective simple XNavDP settings (desired_v uses mpc_v_max in its blueprint).
+controller:
+  tick_rate_hz: 10.0
+  mpc_horizon: 15
+  mpc_desired_v: 0.4
+  mpc_v_max: 0.4
+  mpc_w_max: 0.2
+  max_angular_speed: 0.2
+  decel_start_s: 1.0
+  stop_s: 3.0
+collision:
+  cost_threshold: 50
+  robot_length: 0.6
+  robot_half_width: 0.15
+  robot_radius: 0.30
+  depth_obstacle_m: 0.5
+  horizon_m: 1.5
+  collision_penalty: 1000.0

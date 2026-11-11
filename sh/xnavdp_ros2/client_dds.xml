@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<profiles xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
+  <transport_descriptors>
+    <transport_descriptor>
+      <transport_id>xnavdp_tcp</transport_id>
+      <type>TCPv4</type>
+    </transport_descriptor>
+  </transport_descriptors>
+  <participant profile_name="xnavdp_client" is_default_profile="true">
+    <rtps>
+      <userTransports>
+        <transport_id>xnavdp_tcp</transport_id>
+      </userTransports>
+      <useBuiltinTransports>true</useBuiltinTransports>
+      <builtin>
+        <initialPeersList>
+          <locator>
+            <udpv4>
+              <address>239.255.0.1</address>
+              <port>7400</port>
+            </udpv4>
+          </locator>
+          <locator>
+            <tcpv4>
+              <address>10.10.10.56</address>
+              <physical_port>7411</physical_port>
+              <!-- Deployed server metatraffic: domain 0, participant 0. -->
+              <port>7410</port>
+            </tcpv4>
+          </locator>
+        </initialPeersList>
+      </builtin>
+    </rtps>
+  </participant>
+</profiles>

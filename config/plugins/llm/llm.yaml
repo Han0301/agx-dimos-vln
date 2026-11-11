@@ -1,0 +1,8 @@
+plugin: llm
+base_url: http://10.10.10.56:11434
+timeout_s: 60.0
+keep_alive_s: 900
+model: qwen3:14b
+num_predict: 256
+temperature: 0.0
+think: false

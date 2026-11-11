@@ -1,0 +1,57 @@
+# Ubuntu 24.04 ARM64 / Python 3.12. Pins copied from the working dimos_simple environment.
+# Minimal base constraints plus explicitly selected plugin constraints.
+aioice==0.10.2
+aiortc==1.14.0
+av==16.1.0
+bidict==0.23.1
+blinker==1.9.0
+certifi==2026.1.4
+cffi==2.0.0
+charset-normalizer==3.4.4
+click==8.3.1
+cryptography==46.0.5
+curl_cffi==0.16.3
+dnspython==2.8.0
+Flask==3.1.2
+Flask-SocketIO==5.6.0
+google-crc32c==1.8.0
+h11==0.16.0
+idna==3.11
+ifaddr==0.2.0
+itsdangerous==2.2.0
+Jinja2==3.1.6
+lz4==4.4.5
+MarkupSafe==3.0.3
+numpy==2.3.5
+opencv-python==4.13.0.92
+packaging==25.0
+PyAudio==0.2.14
+pycparser==3.0
+pycryptodome==3.23.0
+pydub==0.25.1
+pyee==13.0.0
+pylibsrtp==1.0.0
+pyOpenSSL==25.3.0
+python-engineio==4.13.1
+python-socketio==5.16.1
+PyYAML==6.0.3
+requests==2.32.5
+simple-websocket==1.1.0
+sounddevice==0.5.5
+typing_extensions==4.15.0
+unitree_webrtc_connect==2.1.2
+urllib3==2.6.3
+wasmtime==41.0.0
+Werkzeug==3.1.5
+wsproto==1.3.2
+
+# Optional path_tracker MPC (same SciPy version as simple).
+scipy==1.17.0
+
+# Independent VLM/LLM/task/Web clients and local VLM gateway.
+httpx==0.28.1
+Pillow==12.3.0
+fastapi==0.162.4
+python-multipart==0.0.32
+uvicorn==0.54.0
+websocket-client==1.9.0

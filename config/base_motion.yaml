@@ -1,0 +1,31 @@
+# Body communication only; camera acquisition and model plugins have independent entries.
+version: 2
+ros:
+  node_name: go2_body_bridge
+  use_sim_time: false
+modules:
+  body: true
+body:
+  ip: 192.168.123.161
+  interface: end0
+  mode: ai
+  aes_key_env: UNITREE_AES_128_KEY
+  allow_motion: true
+  command_timeout_s: 0.5
+  max_linear_mps: 0.4
+  max_angular_rps: 0.2
+  world_frame: world
+  base_frame: base_link
+camera:
+  translation:
+  - 0.15
+  - 0.0
+  - 0.3
+  pitch: 0.1
+  mount_frame: camera_link
+topics:
+  odom: /odom
+  lidar: /lidar
+  cmd_vel: /cmd_vel
+  tf: /tf
+  lowstate: /go2/lowstate

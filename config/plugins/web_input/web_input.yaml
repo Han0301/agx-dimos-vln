@@ -1,0 +1,7 @@
+plugin: web_input
+task_config: config/plugins/vln_task/vln_task.yaml
+host: 127.0.0.1
+port: 5556
+queue_size: 4
+max_records: 128
+max_body_bytes: 8388608

@@ -1,0 +1,12 @@
+version: 1
+task_config: config/plugins/vln_task/vln_task.yaml
+web_config: config/plugins/web_input/web_input.yaml
+xnavdp_config: config/plugins/xnavdp/xnavdp_test.yaml
+tracker_config: config/plugins/path_tracker/tracker.yaml
+body_config: config/base.yaml
+active_search_config: config/plugins/active_search/active_search.yaml
+llm_preload_timeout_s: 20.0
+observation:
+  gap_warning_ms: 150
+  cache_s: 2.0
+  approach_stop_m: 0.6

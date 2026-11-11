@@ -1,0 +1,16 @@
+# 独立通信插件。默认只查健康状态，不发目标、不 reset、不控制机器人。
+plugin: xnavdp
+mode: health_only
+
+test:
+  requests: 1
+  response_timeout_s: 60.0
+  sensor_timeout_s: 10.0
+  service_timeout_s: 10.0
+
+goal:
+  mode: relative
+  xy: [3.0, 0.0]       # 沿用 simple：每次请求时，机器人当前朝向前方 3 米
+
+initialization:
+  reset_if_needed: false

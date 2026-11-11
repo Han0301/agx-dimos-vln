@@ -1,0 +1,12 @@
+.venv/
+.venv.backup-*/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+run/
+camera_ws/build/
+camera_ws/log/
+.ruff_cache/
+data/bags/
+data/log/

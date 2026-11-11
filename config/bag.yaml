@@ -1,0 +1,6 @@
+# Shared rosbag2 environment; playback parameters. Relative bag paths use project root.
+rosbag_setup: ${HOME}/ros2_jazzy/install/setup.bash
+bag_path: ''
+rate: 1.0
+loop: false
+clock_hz: 100.0

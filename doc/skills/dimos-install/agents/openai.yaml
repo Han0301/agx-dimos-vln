@@ -1,0 +1,4 @@
+interface:
+  display_name: "DimOS 安装与环境检查"
+  short_description: "规范化统一安装入口，维护相机 SDK、独立环境与可重复的软件验收"
+  default_prompt: "使用 $dimos-install 读取项目规范，检查并维护 sh/setup/install.sh 的安装与环境验收流程。"
