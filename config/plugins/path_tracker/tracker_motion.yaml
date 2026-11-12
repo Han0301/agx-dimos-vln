@@ -5,7 +5,7 @@ topics:
   result: /xnavdp/result
   odom: /odom
   depth: /camera/camera/aligned_depth_to_color/image_raw
-  lidar: /lidar
+  lidar: null
   costmap: null
   cmd_vel: /cmd_vel
 depth_scale: 1000.0

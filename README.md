@@ -90,7 +90,7 @@ sha256sum /tmp/dimos-runtime.tar.gz
 | 3 · Web、VLN Agent、tracker | `bash sh/start_vln_motion.sh --config config/profiles/vln_motion.yaml` |
 | 4 · RViz | `bash sh/run_rviz.sh --time-source wall` |
 
-这组配置开启速度发布和 Go2 运动接收。自主探索需要 D455 RGB-D、里程计和新鲜 Go2 `/lidar` 世界坐标体素点。详情见 [主动找物](config/plugins/active_search/README.md)。只检查本体通信时使用 `config/base.yaml`，其 `allow_motion` 默认为 false。Go2 默认有线地址为 `192.168.123.161`，网卡为 `end0`，凭据从 `~/.config/dimos/unitree.env` 读取。XNavDP 的 DDS TCP 7411 需要到服务器的直连路由，代理环境配置见 [工作空间架构](doc/architecture/workspace.md#xnavdp-输出如何使用)。
+这组配置开启速度发布和 Go2 运动接收，并关闭 Go2 本体避障。VLN 探索和跟踪使用 D455 RGB-D 与里程计，实机 tracker 不订阅 `/lidar`。详情见 [主动找物](config/plugins/active_search/README.md)。只检查本体通信时使用 `config/base.yaml`，其 `allow_motion` 默认为 false。Go2 默认有线地址为 `192.168.123.161`，网卡为 `end0`，凭据从 `~/.config/dimos/unitree.env` 读取。XNavDP 的 DDS TCP 7411 需要到服务器的直连路由，代理环境配置见 [工作空间架构](doc/architecture/workspace.md#xnavdp-输出如何使用)。
 
 ## Bag 回灌与路径预览
 

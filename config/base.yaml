@@ -29,3 +29,4 @@ topics:
   cmd_vel: /cmd_vel
   tf: /tf
   lowstate: /go2/lowstate
+  imu: /imu

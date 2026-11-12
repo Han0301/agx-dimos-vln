@@ -44,6 +44,7 @@ class Tracker:
         self, config, emit, clock=time.monotonic, *, depth_timeout_s=None, inputs_ready=None
     ):
         self.cfg = config["controller"]
+        self.use_lidar = bool(config["topics"]["lidar"])
         self.guard = XNavDPCollisionGuard(
             **config["collision"], depth_hard_stop=depth_timeout_s is not None
         )
@@ -236,7 +237,7 @@ class Tracker:
             return 0., 0., "odom_stale"
         if self.frame != frame:
             return 0., 0., "exploration_frame_changed"
-        if self.scan is None or now - self.scan_received > 0.75:
+        if self.use_lidar and (self.scan is None or now - self.scan_received > 0.75):
             return 0., 0., "exploration_lidar_stale"
         error = math.remainder(yaw - self.odom[2], math.tau)
         if abs(error) <= TURN_TOLERANCE_RAD:
@@ -246,10 +247,11 @@ class Tracker:
         # The full footprint sweeps a circle as the base turns.
         radius = max(self.guard.robot_radius,
                      math.hypot(self.guard.robot_length / 2, self.guard.robot_half_width))
-        if np.any(np.sum(self.scan[:, :2] ** 2, axis=1) < radius ** 2):
+        scan = self.scan if self.use_lidar else None
+        if scan is not None and np.any(np.sum(scan[:, :2] ** 2, axis=1) < radius ** 2):
             return 0., 0., "collision_lidar"
         blocked = collision_veto(
-            self.guard, self.odom, self.costmap, self.scan, self.depth, 0., angular,
+            self.guard, self.odom, self.costmap, scan, self.depth, 0., angular,
         )
         if blocked is not None:
             return 0., 0., "collision_" + blocked
@@ -474,7 +476,7 @@ class Tracker:
             - c["decel_start_s"]
         ):
             return 0.0, 0.0, "expired"
-        scan = self.scan
+        scan = self.scan if self.use_lidar else None
         if self.depth_timeout_s is not None and now - self.scan_received > 0.75:
             scan = None
         blocked = collision_veto(

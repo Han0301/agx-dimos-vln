@@ -130,7 +130,8 @@ def create_runner(profile, *, locate_only=False, motion_tracker=None):
                 from dimos.vln_task.search.frontier import FrontierPlanner
                 from dimos.vln_task.search.occupancy import DepthOccupancyMap
 
-                cloud = ExplorationCloud(client.node, motion_tracker["topics"]["lidar"])
+                lidar_topic = motion_tracker["topics"]["lidar"]
+                cloud = ExplorationCloud(client.node, lidar_topic) if lidar_topic else None
                 clearance = motion_tracker["collision"]["robot_radius"]
 
             def observe(previous, remaining):

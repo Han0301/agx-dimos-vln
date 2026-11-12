@@ -66,3 +66,37 @@ def test_native_body_messages_and_single_tf_ownership():
     )
     bridge._on_lowstate({"data": {"battery": 50}})
     assert json.loads(bridge.lowstate.items[0].data) == {"data": {"battery": 50}}
+
+
+
+def test_lowstate_forwards_rpy_as_imu():
+    from sensor_msgs.msg import Imu
+
+    stamp = Time(sec=123, nanosec=456)
+    node = SimpleNamespace(
+        get_clock=lambda: SimpleNamespace(
+            now=lambda: SimpleNamespace(to_msg=lambda: stamp)
+        )
+    )
+    bridge = Go2BodyBridge(node, load_config(ROOT / "config/base.yaml"))
+    bridge.lowstate = Sink()
+    bridge.imu = Sink()
+
+    payload = {"data": {"imu_state": {"rpy": [0.0, 0.0, np.pi / 2]}}}
+    bridge._on_lowstate(payload)
+    bridge._on_lowstate({"data": {"imu_state": {"rpy": [0.0, 1.0]}}})
+    bridge._on_lowstate({"data": {"battery": 50}})
+
+    assert len(bridge.lowstate.items) == 3
+    assert json.loads(bridge.lowstate.items[0].data) == payload
+    assert len(bridge.imu.items) == 1
+    imu = bridge.imu.items[0]
+    assert isinstance(imu, Imu)
+    assert imu.header.frame_id == "base_link"
+    assert imu.header.stamp == stamp
+    orientation = imu.orientation
+    assert [orientation.x, orientation.y, orientation.z, orientation.w] == pytest.approx(
+        [0.0, 0.0, 0.70710678, 0.70710678]
+    )
+    assert imu.angular_velocity_covariance[0] == -1.0
+    assert imu.linear_acceleration_covariance[0] == -1.0

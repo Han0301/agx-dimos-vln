@@ -11,7 +11,7 @@ import threading
 from concurrent.futures import Future
 from pathlib import Path
 
-from unitree_webrtc_connect.constants import RTC_TOPIC, SPORT_CMD
+from unitree_webrtc_connect.constants import OBSTACLES_AVOID_API, RTC_TOPIC, SPORT_CMD
 
 from dimos.robot.unitree.go2.wired_link import WiredLink
 from dimos.robot.unitree.go2.wired_webrtc import WiredWebRTC
@@ -20,10 +20,11 @@ log = logging.getLogger(__name__)
 
 
 class UnitreeWebRTCConnection:
-    def __init__(self, ip, mode="ai", aes_128_key=None):
+    def __init__(self, ip, mode="ai", aes_128_key=None, *, obstacle_avoidance=None):
         self.link = WiredLink.check(ip)
         self.conn = WiredWebRTC(self.link, aes_128_key)
         self.mode = mode
+        self.obstacle_avoidance = obstacle_avoidance
         self.loop = asyncio.new_event_loop()
         self.thread = None
         self.task = None
@@ -44,6 +45,21 @@ class UnitreeWebRTCConnection:
                     ),
                     timeout=10,
                 )
+                if self.obstacle_avoidance is not None:
+                    reply = await asyncio.wait_for(
+                        self.conn.datachannel.pub_sub.publish_request_new(
+                            RTC_TOPIC["OBSTACLES_AVOID"],
+                            {
+                                "api_id": OBSTACLES_AVOID_API["SWITCH_SET"],
+                                "parameter": {"enable": int(self.obstacle_avoidance)},
+                            },
+                        ),
+                        timeout=4,
+                    )
+                    status = (reply or {}).get("data", {}).get("header", {}).get("status", {})
+                    if status.get("code") != 0:
+                        raise RuntimeError("Go2 did not confirm the obstacle avoidance setting")
+                    log.info("Go2 obstacle_avoidance=%s", self.obstacle_avoidance)
                 startup.set_result(None)
                 carrier = Path("/sys/class/net") / self.link.interface / "carrier"
                 while True:

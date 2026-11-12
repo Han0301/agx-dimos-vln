@@ -11,6 +11,7 @@ body:
   mode: ai
   aes_key_env: UNITREE_AES_128_KEY
   allow_motion: true
+  obstacle_avoidance: false
   command_timeout_s: 0.5
   max_linear_mps: 0.4
   max_angular_rps: 0.2
@@ -29,3 +30,4 @@ topics:
   cmd_vel: /cmd_vel
   tf: /tf
   lowstate: /go2/lowstate
+  imu: /imu

@@ -13,6 +13,7 @@ TOPICS = {
     "cmd_vel",
     "tf",
     "lowstate",
+    "imu",
 }
 
 
@@ -31,6 +32,8 @@ def load_config(path):
         raise ValueError(f"modules must be exactly {sorted(MODULES)}")
     if any(type(v) is not bool for v in cfg["modules"].values()):
         raise ValueError("module switches must be booleans")
+    if isinstance(cfg["topics"], dict):
+        cfg["topics"].setdefault("imu", "/imu")
     if set(cfg["topics"]) != TOPICS:
         raise ValueError(f"topics must be exactly {sorted(TOPICS)}")
     if any(
@@ -56,8 +59,11 @@ def load_config(path):
         "camera": {"translation", "pitch", "mount_frame"},
     }
     for name, keys in expected_sections.items():
-        if not isinstance(cfg[name], dict) or set(cfg[name]) != keys:
-            raise ValueError(f"{name} keys must be exactly {sorted(keys)}")
+        optional = {"obstacle_avoidance"} if name == "body" else set()
+        if not isinstance(cfg[name], dict) or not keys <= cfg[name].keys() <= keys | optional:
+            raise ValueError(f"{name} requires {sorted(keys)} with optional keys {sorted(optional)}")
+    if "obstacle_avoidance" in cfg["body"] and type(cfg["body"]["obstacle_avoidance"]) is not bool:
+        raise ValueError("body.obstacle_avoidance must be boolean")
     if type(cfg["ros"]["use_sim_time"]) is not bool:
         raise ValueError("ros.use_sim_time must be boolean")
     if type(cfg["body"]["allow_motion"]) is not bool:

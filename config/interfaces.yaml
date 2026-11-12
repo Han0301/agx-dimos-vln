@@ -21,6 +21,13 @@ base:
       type: std_msgs/msg/String
       qos: best_effort_volatile
       format: native SDK message serialized as JSON
+    /imu:
+      type: sensor_msgs/msg/Imu
+      qos: best_effort_volatile
+      frame: base_link
+      stamp: ROS time at robot message receipt
+      source: lowstate imu_state.rpy (radians) converted to quaternion
+      unavailable: angular_velocity and linear_acceleration (covariance[0] = -1)
     /tf:
       type: tf2_msgs/msg/TFMessage
       frames:

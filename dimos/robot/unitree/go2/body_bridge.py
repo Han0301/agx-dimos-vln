@@ -56,7 +56,7 @@ class Go2BodyBridge:
     def start(self):
         from geometry_msgs.msg import PoseStamped, Twist
         from rclpy.qos import qos_profile_sensor_data
-        from sensor_msgs.msg import PointCloud2
+        from sensor_msgs.msg import Imu, PointCloud2
         from std_msgs.msg import String
         from std_srvs.srv import Trigger
         from tf2_msgs.msg import TFMessage
@@ -76,9 +76,11 @@ class Go2BodyBridge:
         self.lowstate = self.node.create_publisher(
             String, topics["lowstate"], qos_profile_sensor_data
         )
+        self.imu = self.node.create_publisher(Imu, topics["imu"], qos_profile_sensor_data)
         self.tf = self.node.create_publisher(TFMessage, topics["tf"], 10)
         self.connection = UnitreeWebRTCConnection(
-            b["ip"], mode=b["mode"], aes_128_key=aes_key
+            b["ip"], mode=b["mode"], aes_128_key=aes_key,
+            obstacle_avoidance=b.get("obstacle_avoidance"),
         )
         self.connection.start()
         self.connection.subscribe(RTC_TOPIC["ROBOTODOM"], self._on_odom)
@@ -330,6 +332,7 @@ class Go2BodyBridge:
             log.warning("discarded malformed robot lidar: %s", exc)
 
     def _on_lowstate(self, msg):
+        from sensor_msgs.msg import Imu
         from std_msgs.msg import String
 
         self.lowstate.publish(
@@ -337,6 +340,29 @@ class Go2BodyBridge:
                 data=json.dumps(msg, ensure_ascii=False, default=lambda v: v.tolist())
             )
         )
+
+        try:
+            rpy = msg["data"]["imu_state"]["rpy"]
+            roll, pitch, yaw = (float(angle) / 2.0 for angle in rpy)
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return
+        if not all(math.isfinite(angle) for angle in (roll, pitch, yaw)):
+            return
+
+        cr, sr = math.cos(roll), math.sin(roll)
+        cp, sp = math.cos(pitch), math.sin(pitch)
+        cy, sy = math.cos(yaw), math.sin(yaw)
+
+        imu = Imu()
+        imu.header.stamp = self.node.get_clock().now().to_msg()
+        imu.header.frame_id = self.config["body"]["base_frame"]
+        imu.orientation.x = sr * cp * cy - cr * sp * sy
+        imu.orientation.y = cr * sp * cy + sr * cp * sy
+        imu.orientation.z = cr * cp * sy - sr * sp * cy
+        imu.orientation.w = cr * cp * cy + sr * sp * sy
+        imu.angular_velocity_covariance[0] = -1.0
+        imu.linear_acceleration_covariance[0] = -1.0
+        self.imu.publish(imu)
 
     def check(self):
         if self.connection is not None:
