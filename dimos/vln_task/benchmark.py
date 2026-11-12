@@ -48,7 +48,6 @@ def main(argv=None):
     from dimos.plugins.llm.client import LLMClient
     from dimos.plugins.vlm.client import VLMClient
     from dimos.vln_task.agent import TaskAgent
-    from dimos.plugins.web_input.app import create_app
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--image", type=Path, required=True)
@@ -156,6 +155,9 @@ def main(argv=None):
                 result["tool_calls"] == 1 and visual_correct(result["answer"])
             ),
         )
+
+    # Keep Web imports deferred until the loopback benchmark starts.
+    from dimos.vln_task.web import create_app
 
     server = uvicorn.Server(
         uvicorn.Config(
