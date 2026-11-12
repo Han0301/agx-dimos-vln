@@ -1,6 +1,6 @@
 import argparse
 
-from . import MODULE_NAME, create_run, log_root, module_directory
+from . import DEFAULT_EVIDENCE, MODULE_NAME, create_run, log_root, module_directory
 
 
 def main():
@@ -8,8 +8,10 @@ def main():
     parser.add_argument("module", help="record, or a module name with --latest")
     parser.add_argument("--root", help="override the log root")
     parser.add_argument("--mode", choices=("live", "bag"), help="label the recording")
-    parser.add_argument("--evidence", choices=("off", "failures"), default="off",
-                        help="save limited evidence from failed detections")
+    parser.add_argument(
+        "--evidence", choices=("off", "failures"), default=DEFAULT_EVIDENCE,
+        help="save bounded evidence from failed or uncertain detections (default: %(default)s)",
+    )
     parser.add_argument("--metadata", action="append", default=[], help=argparse.SUPPRESS)
     parser.add_argument("--pid", type=int, help=argparse.SUPPRESS)
     action = parser.add_mutually_exclusive_group()

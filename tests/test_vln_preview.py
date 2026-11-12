@@ -10,7 +10,7 @@ from PIL import Image
 
 
 def test_geometry_uses_frozen_capture_and_explicit_coordinates():
-    from dimos.plugins.vln_task.preview import parse_detection, target_and_goal
+    from dimos.vln_task.preview import parse_detection, target_and_goal
 
     frame = NS(
         k=[100.0, 0.0, 50.0, 0.0, 100.0, 50.0, 0.0, 0.0, 1.0],
@@ -24,20 +24,21 @@ def test_geometry_uses_frozen_capture_and_explicit_coordinates():
             )
         ),
     )
-    box = parse_detection('```json\n[{"bbox_2d":[400,400,600,600],"label":"bin"}]\n```')
+    box = parse_detection('```json\n{"name":"bin","bbox":[400,400,600,600]}\n```')
+    assert box == (400., 400., 600., 600.)
+    assert all(type(value) is float for value in box)
     target, goal, depth = target_and_goal(
         frame, box, {"translation": [0.0, 0.0, 0.0], "pitch": 0.0}, 0.6
     )
     assert target == pytest.approx([3.0, 2.0, 0.0])
     assert goal == pytest.approx([2.4, 2.0])
     assert depth == 2
-    assert parse_detection("[]") is None
-    with pytest.raises(ValueError):
-        parse_detection('[{"bbox_3d":[1,2,3],"label":"bin"}]')
+    assert parse_detection("None") is None
+    assert parse_detection('{"name":"bin","bbox_3d":[1,2,3]}') is None
 
 
 def test_profile_keeps_tracking_preview_only():
-    from dimos.plugins.vln_task.profile import load_profile
+    from dimos.vln_task.profile import load_profile
 
     profile = load_profile("config/profiles/vln_preview.yaml")
     assert profile["tracker"]["output_only"] is True
@@ -46,7 +47,7 @@ def test_profile_keeps_tracking_preview_only():
 
 
 def test_tracking_uses_new_depth_and_odometry_after_capture(monkeypatch):
-    from dimos.plugins.vln_task import observation as module
+    from dimos.vln_task import observation as module
 
     now = 10.0
     monkeypatch.setattr(module.time, "monotonic", lambda: now)
@@ -81,8 +82,8 @@ def test_tracking_uses_new_depth_and_odometry_after_capture(monkeypatch):
 
 
 def test_preview_passes_correlated_result_and_blocks_cancelled_result():
-    from dimos.plugins.vln_task.agent import TaskCancelled
-    from dimos.plugins.vln_task.preview import NavigationPreview
+    from dimos.vln_task.agent import TaskCancelled
+    from dimos.vln_task.preview import NavigationPreview
 
     frame = NS(
         k=[100.0, 0.0, 50.0, 0.0, 100.0, 50.0, 0.0, 0.0, 1.0],
@@ -105,7 +106,7 @@ def test_preview_passes_correlated_result_and_blocks_cancelled_result():
     vlm = NS(
         config={"timeout_s": 1},
         query=lambda *a, **kw: {
-            "text": '[{"bbox_2d":[400,400,600,600],"label":"bin","appearance_match":"match"}]',
+            "text": '{"name":"bin","bbox":[400,400,600,600]}',
             "elapsed_ms": 3,
         },
     )
@@ -145,7 +146,7 @@ def test_preview_passes_correlated_result_and_blocks_cancelled_result():
 
 
 def test_agent_routes_camera_request_without_upload(monkeypatch):
-    from dimos.plugins.vln_task import agent as module
+    from dimos.vln_task import agent as module
 
     calls = []
     diagnostics = {}
@@ -198,12 +199,10 @@ def test_agent_routes_camera_request_without_upload(monkeypatch):
     assert diagnostics["navigation_tool_finished"]["navigation_status"] == "preview_ready"
 
 
-def test_duplicate_bbox_is_rejected_before_navigation():
-    from dimos.plugins.vln_task.preview import NavigationPreview, parse_detection
+def test_malformed_reply_is_a_miss_before_navigation():
+    from dimos.vln_task.preview import NavigationPreview
 
-    response = '[{"label":"bin","bbox_2d":[0,416,22,578],"bbox_2d":[301,344,400,714]}]'
-    with pytest.raises(ValueError, match="Duplicate.*bbox_2d"):
-        parse_detection(response)
+    response = '{"name":"bin","bbox":[301,344,400,]}'
 
     target = "white rectangular pedal bin with a lid on the floor left of the plants"
     frame = NS(jpeg=b"frame", stamp_ns=1000, depth_gap_ms=3, odom_gap_ms=4, wait_ms=0)
@@ -214,7 +213,7 @@ def test_duplicate_bbox_is_rejected_before_navigation():
         return {"text": response, "elapsed_ms": 31}
 
     def must_not_run(*args):
-        pytest.fail("A duplicate detection must not reach planning or tracking")
+        pytest.fail("A malformed detection must not reach planning or tracking")
 
     skill = NavigationPreview(
         NS(query=query, config={"timeout_s": 1}),
@@ -225,7 +224,7 @@ def test_duplicate_bbox_is_rejected_before_navigation():
         0.6,
     )
     result = skill(target, lambda: 1)
-    assert result["status"] == "invalid_detection"
+    assert result["status"] == "not_visible"
     assert result["observation"]["stamp_ns"] == 1000
     assert result["timing_ms"]["vlm"] == 31
-    assert "bbox_2d" in result["detection_error"]
+    assert "bbox_2d" not in result

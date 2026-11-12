@@ -11,10 +11,10 @@ from uuid import uuid4
 import numpy as np
 from PIL import Image
 
-from dimos.plugins.runtime_log import event, recording_enabled
+from dimos.plugins.runtime_log import diagnostic_artifact, event, recording_enabled
 from dimos.plugins.xnavdp.client import ODOM_TOPIC, RGB_TOPIC, stamp_ns
 
-LOG = logging.getLogger('dimos.plugins.vln_task.observation')
+LOG = logging.getLogger('dimos.vln_task.observation')
 DEPTH_TOPIC = "/camera/camera/aligned_depth_to_color/image_raw/compressed"
 INFO_TOPIC = "/realsense_camera_info"
 PNG = b"\x89PNG\r\n\x1a\n"
@@ -35,6 +35,8 @@ class Observation:
     odom_gap_ms: float
     wait_ms: float
     observation_id: str | None = None
+    received_at: float = float("-inf")
+    rgb_diagnostic_artifact: str | None = None
 
 
 class Observations:
@@ -53,7 +55,7 @@ class Observations:
         self.info = None
         self.info_received = None
         self.motion_arrivals = {}
-        self.last_stale_inputs = None
+        self.last_missing_inputs = None
         self.subscriptions = [
             node.create_subscription(
                 kind, topic, self._receiver(topic), qos_profile_sensor_data
@@ -116,28 +118,18 @@ class Observations:
 
     def motion_inputs_ready(self):
         with self.cv:
-            now = time.monotonic()
             if not recording_enabled():
-                return self.info is not None and all(
-                    topic in self.motion_arrivals
-                    and now - self.motion_arrivals[topic][1] <= TRACKING_MAX_AGE_S
-                    for topic in self.frames
-                )
-            stale = tuple(
-                topic for topic in self.frames
-                if topic not in self.motion_arrivals
-                or now - self.motion_arrivals[topic][1] > TRACKING_MAX_AGE_S
-            )
+                return self.info is not None and all(topic in self.motion_arrivals for topic in self.frames)
+            missing = tuple(topic for topic in self.frames if topic not in self.motion_arrivals)
             if self.info is None:
-                stale += (INFO_TOPIC,)
-            report = stale != self.last_stale_inputs
+                missing += (INFO_TOPIC,)
+            report = missing != self.last_missing_inputs
             if report:
-                self.last_stale_inputs = stale
-                ages = self._latest_sample_fields(now)
+                self.last_missing_inputs = missing
+                samples = self._latest_sample_fields(time.monotonic())
         if report:
-            event(LOG, "motion_observation_state", ready=not stale, stale_topics=stale,
-                  freshness_limit_ms=TRACKING_MAX_AGE_S * 1000, samples=ages)
-        return not stale
+            event(LOG, "motion_observation_state", ready=not missing, missing_topics=missing, samples=samples)
+        return not missing
 
     def _latest_sample_fields(self, now):
         latest = {
@@ -152,16 +144,18 @@ class Observations:
             }
         return latest
 
-    def _snapshot_timeout(self, started, after_stamp_ns, max_age_s, blocked_by):
+    def _snapshot_timeout(self, started, after_stamp_ns, max_age_s, received_after, blocked_by):
         now = time.monotonic()
         with self.cv:
             samples = self._latest_sample_fields(now)
         event(LOG, "observation_timeout", wait_ms=(now - started) * 1000,
               after_rgb_stamp_ns=after_stamp_ns, max_age_s=max_age_s,
-              reason=blocked_by, samples=samples,
+              received_after_monotonic_s=received_after, reason=blocked_by, samples=samples,
               missing_topics=[topic for topic in (*self.frames, INFO_TOPIC) if topic not in samples])
 
-    def snapshot(self, remaining, *, after_stamp_ns=0, accept_odom=None, max_age_s=None):
+    def snapshot(
+        self, remaining, *, after_stamp_ns=0, accept_odom=None, max_age_s=None, received_after=None,
+    ):
         started = time.monotonic()
         end = started + min(self.timeout, remaining())
         recording = recording_enabled()
@@ -171,11 +165,11 @@ class Observations:
                 wait = min(end - time.monotonic(), remaining())
             except TimeoutError:
                 if recording:
-                    self._snapshot_timeout(started, after_stamp_ns, max_age_s, blocked_by)
+                    self._snapshot_timeout(started, after_stamp_ns, max_age_s, received_after, blocked_by)
                 raise
             if wait <= 0:
                 if recording:
-                    self._snapshot_timeout(started, after_stamp_ns, max_age_s, blocked_by)
+                    self._snapshot_timeout(started, after_stamp_ns, max_age_s, received_after, blocked_by)
                 raise TimeoutError(
                     "No recent RGB, aligned depth, odom and camera calibration"
                 )
@@ -186,13 +180,19 @@ class Observations:
                     while queue and queue[0][0] < oldest:
                         queue.popleft()
                 frames = self.frames
+                fresh_since = received_after
                 if max_age_s is not None:
-                    fresh_since = now - max_age_s
+                    fresh_since = max(now - max_age_s, fresh_since if fresh_since is not None else oldest)
+                if fresh_since is not None:
                     frames = {
                         topic: [item for item in queue if item[0] >= fresh_since]
                         for topic, queue in self.frames.items()
                     }
-                blocked_by = "missing_or_stale_inputs"
+                blocked_by = (
+                    "waiting_for_settled_observation" if received_after is not None
+                    and all(self.frames.values()) and not all(frames.values())
+                    else "missing_or_stale_inputs"
+                )
                 if self.info is not None and all(frames.values()):
                     rgb_at, rgb = frames[RGB_TOPIC][-1]
                     stamp = stamp_ns(rgb.header)
@@ -216,7 +216,40 @@ class Observations:
         depth_offset, odom_offset = (depth_stamp - stamp) / 1e6, (odom_stamp - stamp) / 1e6
         depth_gap, odom_gap = abs(depth_offset), abs(odom_offset)
         observation_id = uuid4().hex if recording else None
+        jpeg, compressed_depth = bytes(rgb.data), bytes(depth.data)
+        rgb_path = None
         if recording:
+            rgb_format = getattr(rgb, "format", None)
+            depth_format = getattr(depth, "format", None)
+            rgb_path = diagnostic_artifact(
+                f"obs-{observation_id}-rgb.jpg", jpeg, kind="observation_rgb",
+                observation_id=observation_id, source_stamp_ns=stamp, format=rgb_format,
+            )
+            depth_path = diagnostic_artifact(
+                f"obs-{observation_id}-depth.bin", compressed_depth, kind="observation_depth",
+                observation_id=observation_id, source_stamp_ns=depth_stamp, format=depth_format,
+            )
+            pose = getattr(odom, "pose", None)
+            odom_pose = None if pose is None else {
+                "position_xyz": [pose.position.x, pose.position.y, pose.position.z],
+                "orientation_xyzw": [
+                    pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w,
+                ],
+            }
+            camera_info = {
+                "width": info.width, "height": info.height,
+                "distortion_model": info.distortion_model,
+                "k": list(info.k), "d": list(info.d),
+                "r": list(getattr(info, "r", ())), "p": list(getattr(info, "p", ())),
+                "binning_x": getattr(info, "binning_x", None),
+                "binning_y": getattr(info, "binning_y", None),
+            }
+            roi = getattr(info, "roi", None)
+            if roi is not None:
+                camera_info["roi"] = {
+                    name: getattr(roi, name)
+                    for name in ("x_offset", "y_offset", "width", "height", "do_rectify")
+                }
             event(
                 LOG, "observation_selected", observation_id=observation_id,
                 rgb_stamp_ns=stamp, depth_stamp_ns=depth_stamp,
@@ -228,7 +261,12 @@ class Observations:
                 depth_gap_ms=depth_gap, odom_gap_ms=odom_gap, wait_ms=wait_ms,
                 rgb_frame=rgb.header.frame_id, depth_frame=depth.header.frame_id,
                 odom_frame=odom.header.frame_id, camera_info_frame=info.header.frame_id,
+                camera_info=camera_info, odom_pose=odom_pose, depth_scale=self.depth_scale,
+                rgb_format=rgb_format, depth_format=depth_format,
+                rgb_bytes=len(jpeg), depth_bytes=len(compressed_depth),
+                rgb_diagnostic_artifact=rgb_path, depth_diagnostic_artifact=depth_path,
                 after_rgb_stamp_ns=after_stamp_ns, max_age_s=max_age_s,
+                received_after_monotonic_s=received_after,
             )
         if max(depth_gap, odom_gap) > self.settings["gap_warning_ms"]:
             LOG.warning(
@@ -243,14 +281,14 @@ class Observations:
                 or not odom.header.frame_id
             ):
                 raise ValueError("RGB, CameraInfo or odom frame is missing or inconsistent")
-            depth_m = self._decode_depth(depth, info)
-            jpeg = bytes(rgb.data)
+            depth_m = self._decode_depth(compressed_depth, info)
             with Image.open(io.BytesIO(jpeg)) as image:
                 if image.format != "JPEG" or image.size != (info.width, info.height):
                     raise ValueError("RGB encoding or dimensions differ from CameraInfo")
         except (OSError, ValueError) as exc:
-            event(LOG, "observation_rejected", rgb_stamp_ns=stamp,
-                  error_type=type(exc).__name__, reason=str(exc))
+            if recording:
+                event(LOG, "observation_rejected", observation_id=observation_id, rgb_stamp_ns=stamp,
+                      error_type=type(exc).__name__, reason=str(exc))
             raise
         return Observation(
             jpeg=jpeg,
@@ -265,6 +303,8 @@ class Observations:
             odom_gap_ms=odom_gap,
             wait_ms=wait_ms,
             observation_id=observation_id,
+            received_at=min(rgb_at, depth_at, odom_at),
+            rgb_diagnostic_artifact=rgb_path,
         )
 
     def tracking_inputs(self):
@@ -279,10 +319,9 @@ class Observations:
             if time.monotonic() - min(depth_at, odom_at) > TRACKING_MAX_AGE_S:
                 return None
             info = self.info
-        return odom, self._decode_depth(depth, info), stamp_ns(depth.header)
+        return odom, self._decode_depth(bytes(depth.data), info), stamp_ns(depth.header)
 
-    def _decode_depth(self, depth, info):
-        compressed = bytes(depth.data)
+    def _decode_depth(self, compressed, info):
         offset = compressed.find(PNG, 0, 20)
         if offset < 0:
             raise ValueError("Expected aligned uint16 PNG depth")

@@ -28,7 +28,7 @@ bash sh/start_tracker.sh --output-only
 | `/odom` | geometry_msgs/PoseStamped | 最新平面位姿，记录 monotonic 接收时间 |
 | `/camera/camera/aligned_depth_to_color/image_raw` | sensor_msgs/Image | 最新原始对齐深度；16UC1/mono16 除以 depth_scale 得到米，32FC1 按米使用 |
 | `/lidar` | sensor_msgs/PointCloud2，可选 | 原 XYZ 点云；world 与 base_link 输入适配为碰撞器需要的本体 XY |
-| costmap 配置项 | nav_msgs/OccupancyGrid，可选 | 默认 null，不订阅也不生成；启用时须与 odom 同世界 frame |
+| costmap 配置项 | nav_msgs/OccupancyGrid，可选 | 独立预览默认 null；实机 VLN 使用 `/global_costmap`，与 odom 共用世界坐标系 |
 
 独立 tracker 以 Reliable/Volatile/KeepLast(10) 订阅 result。实机 VLN 装配由 Web 进程直接把已配对校验的任务路径提交给 tracker。odom、深度和激光使用 BestEffort/Volatile/KeepLast(1)。回调更新缓存，MPC 规划与 10 Hz 控制分别运行。RViz 继续使用原生 `/xnavdp/trajectory` 和 `/xnavdp/result`。
 
@@ -38,7 +38,8 @@ bash sh/start_tracker.sh --output-only
 - 结果参考位姿与当前 odom 使用原平面 yaw 变换；世界 frame 必须一致。选中路径进入 MPC，候选评分不重新选路。
 - 最新规划任务替换等待任务；计算完成后检查是否被更新取代。MPC 失败保留旧计划至其原有效期。
 - 默认 10 Hz、horizon 15、期望/最大线速度 0.4 m/s、最大角速度 0.2 rad/s；约 1 秒开始减速、3 秒失效，odom 超过 0.5 秒未收到即停止。到目标 0.2 米停止。
-- 障碍检查沿用 costmap 优先、否则激光，另加前向深度否决；仅允许碰撞检查通过的旋转。
+- 实机 VLN 用 `costmap_lidar` 指定生成代价地图的体素点云，`topics.lidar: null` 关闭 tracker 的直接点云检查。地图使用最新点云和机器人周围 10 m 窗口，分辨率 0.05 m，按高度梯度计算代价。
+- Tracker 用 0.60 × 0.30 m 的车身轮廓检查未来 0.8 s，覆盖前进、倒车和旋转。地图缺失或超过 1 s 未更新时发零速，前向深度停车继续生效。
 - 独立入口解码失败时保留旧缓存，计划按原到期规则停止。实机 VLN 装配额外检查传感器新鲜度。循环 bag 时间倒退时，独立 tracker 会忽略较旧结果，需重启 tracker。
 - 所有控制和过期计时使用单调时钟；不依赖 ROS 定时器，不把 bag header 与墙钟比较。没有新增 /clock 处理。
 - VLN 任务层负责固定世界目标、持续规划、到达和取消。独立入口从 result.goal 与参考位姿恢复目标。前方 3 米通信测试会随请求改变目标。

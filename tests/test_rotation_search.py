@@ -36,11 +36,12 @@ def test_sweep_checks_five_new_headings_or_stops_at_hit(hit_at):
         turns.append(yaw)
         stopped = True
 
-    def observe(remaining, *, after_stamp_ns, accept_odom, max_age_s):
+    def observe(remaining, *, after_stamp_ns, accept_odom, max_age_s, received_after):
         assert stopped
         assert after_stamp_ns == 100 + len(turns) - 1
-        observation = frame(after_stamp_ns + 1, turns[-1])
+        observation = frame(after_stamp_ns + 1, turns[-1] - math.radians(6))
         assert accept_odom(observation.odom)
+        assert not accept_odom(frame(observation.stamp_ns, turns[-1] - math.radians(8)).odom)
         return observation
 
     def detect(observation, target, remaining):
@@ -104,7 +105,7 @@ def test_sweep_hands_a_matching_box_with_bad_depth_to_directed_approach():
     ("invalid_depth", "发现匹配目标，但未能取得有效深度。"),
 ])
 def test_agent_reports_exhausted_scan_without_another_llm_call(status, expected):
-    from dimos.plugins.vln_task.agent import TaskAgent
+    from dimos.vln_task.agent import TaskAgent
 
     messages = iter([{"role": "assistant", "tool_calls": [
         {"function": {"name": "find_object", "arguments": {"target": "杯子"}}},

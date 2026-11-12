@@ -8,6 +8,7 @@ import logging
 import queue
 import threading
 import time
+import traceback
 import uuid
 from contextlib import asynccontextmanager
 from functools import partial
@@ -19,9 +20,20 @@ from starlette.datastructures import UploadFile
 from starlette.formparsers import MultiPartException, MultiPartParser
 
 from dimos.plugins._agent_common import TaskCancelled, validate_image
-from dimos.plugins.runtime_log import event, task_context
+from dimos.plugins.runtime_log import event, recording_enabled, task_context
+from dimos.plugins.runtime_log._redaction import redact_text
 
 logger = logging.getLogger("dimos.plugins.web_input.app")
+
+def run_reference_task(runner, goal, image, *, cancel, on_progress):
+    """Pass a task with an image to the runner's optional reference entry point."""
+    run = getattr(runner, "run_with_reference", None)
+    if run is None:
+        run = getattr(runner, "run_with_progress", None)
+    if run is None:
+        return runner.run(goal, image, cancel=cancel)
+    return run(goal, image, cancel=cancel, on_progress=on_progress)
+
 
 def create_app(config, runner_factory, *, startup=None, health_details=None,
                format_status=None, result_fields=None):
@@ -66,7 +78,12 @@ def create_app(config, runner_factory, *, startup=None, health_details=None,
                             max(0, task["started_at"] - task["created_at"]) * 1000,
                         )
                         try:
-                            if run_with_progress is None:
+                            if image is not None:
+                                result = run_reference_task(
+                                    runner, task["goal"], image, cancel=task["cancel"],
+                                    on_progress=partial(report_progress, task),
+                                )
+                            elif run_with_progress is None:
                                 result = runner.run(
                                     task["goal"], image, cancel=task["cancel"]
                                 )
@@ -93,7 +110,16 @@ def create_app(config, runner_factory, *, startup=None, health_details=None,
                                     logger.warning(
                                         "task failed error_type=%s", type(exc).__name__
                                     )
-                                    event(logger, "task_failed", error_type=type(exc).__name__)
+                                    if recording_enabled():
+                                        event(
+                                            logger, "task_failed", error_type=type(exc).__name__,
+                                            error_message=redact_text(str(exc))[:1000],
+                                            stage=task.get("progress", {}).get("status"),
+                                            traceback=[
+                                                {"file": item.filename, "line": item.lineno, "function": item.name}
+                                                for item in traceback.extract_tb(exc.__traceback__, limit=-12)
+                                            ],
+                                        )
                         finally:
                             with lock:
                                 if task["finished_at"] is None:

@@ -2,11 +2,16 @@
 # Optional XNavDP visualization only; no inference, sensor or playback startup.
 set -eo pipefail
 _RVIZ_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+_RVIZ_MODULE=dimos.plugins.xnavdp.visualization
+if [[ ${1:-} == --memory-view ]]; then
+  _RVIZ_MODULE=dimos.vln_task.rviz
+  shift
+fi
 for _RVIZ_ARG in "$@"; do
   case "$_RVIZ_ARG" in
     --dry-run|-h|--help)
       export PYTHONPATH="$_RVIZ_ROOT${PYTHONPATH:+:$PYTHONPATH}"
-      exec /usr/bin/python3 -m dimos.plugins.xnavdp.visualization "$@";;
+      exec /usr/bin/python3 -m "$_RVIZ_MODULE" "$@";;
   esac
 done
 _RVIZ_SETUP="$(/usr/bin/python3 -I - "$_RVIZ_ROOT" <<'PY'
@@ -28,4 +33,4 @@ export PATH=/usr/bin:/bin
 source "$_RVIZ_SETUP"
 source "$_RVIZ_ROOT/sh/xnavdp_ros2/dds_env.sh"
 export PYTHONPATH="$_RVIZ_ROOT${PYTHONPATH:+:$PYTHONPATH}"
-exec /usr/bin/python3 -m dimos.plugins.xnavdp.visualization "$@"
+exec /usr/bin/python3 -m "$_RVIZ_MODULE" "$@"

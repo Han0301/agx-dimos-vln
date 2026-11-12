@@ -8,7 +8,7 @@ bash sh/start_web_input.sh --profile config/profiles/vln_preview.yaml
 
 配置为 `web_input.yaml`，默认监听 `127.0.0.1:5556`，网页接受文字及可选 JPEG/PNG。每个任务独立绑定上传图。单 worker 调用主 agent，队列和终态记录有容量上限；达到记录上限时优先淘汰最早的终态记录。
 
-首页提供 VLN Navigation 界面。使用 `vln_preview` 配置时，RealSense RGB 和深度面板读取现有 ROS 相机或 bag 数据。Go2 和 Frontier 面板保留等待提示。Navigate 与 Stop 分别提交和取消任务。多视角找物显示搜索、复核、路径就绪或搜索结束未找到。
+首页提供 VLN Navigation 界面。使用 `vln_preview` 配置时，RealSense RGB 和深度面板读取现有 ROS 相机或 bag 数据。Go2 和 Frontier 面板保留等待提示。Navigate 与 Stop 分别提交和取消任务。多视角找物显示检测、搜索、路径就绪或搜索结束未找到。
 
 | 接口 | 输入与结果 |
 | --- | --- |

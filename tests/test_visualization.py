@@ -1,7 +1,9 @@
 """RViz wiring and optional result rendering without launching a window."""
 
 import json
+import shlex
 import subprocess
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -41,6 +43,30 @@ def test_rviz_dry_run_is_independent_of_device_and_model_startup():
         "start_compressor" not in result.stdout
         and "pointgoal_step" not in result.stdout
     )
+
+
+def test_memory_rviz_dry_run_loads_exploration_displays_from_another_directory():
+    result = subprocess.run(
+        ["bash", str(ROOT / "sh/run_rviz_mem.sh"), "--time-source", "sim", "--dry-run"],
+        cwd="/",
+        text=True,
+        capture_output=True,
+        check=True,
+        timeout=10,
+    )
+    commands = [shlex.split(line) for line in result.stdout.splitlines()]
+    launch = next(command for command in commands if command[0] == "rviz2")
+    assert all("use_sim_time:=true" in command for command in commands)
+    assert {Path(command[1]).name for command in commands[:-1]} == {
+        "depth_to_cloud.py", "visualization_tf.py", "result_visualizer.py",
+    }
+    profile = yaml.safe_load(Path(launch[launch.index("-d") + 1]).read_text())
+    manager = profile["Visualization Manager"]
+    assert manager["Global Options"]["Fixed Frame"] == "world"
+    displays = {display["Topic"]["Value"]: display for display in manager["Displays"] if "Topic" in display}
+    assert displays["/vln/exploration/map"]["Class"] == "rviz_default_plugins/Map"
+    assert displays["/vln/exploration/markers"]["Class"] == "rviz_default_plugins/MarkerArray"
+    assert "/xnavdp/trajectory" in displays
 
 
 def test_rviz_records_requested_and_resolved_time_source(tmp_path, monkeypatch):

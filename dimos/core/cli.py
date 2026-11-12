@@ -43,9 +43,13 @@ def main(argv=None):
             return 0
         if argv is None:
             from dimos.plugins.runtime_log import capture
+            from dimos.plugins.runtime_log._redaction import redact_config
 
             module = "body" if config["modules"]["body"] else "dimos"
-            stack.enter_context(capture(module, ros=True))
+            stack.enter_context(capture(module, ros=True, metadata=lambda: {
+                "config_path": str(args.config),
+                "effective_config": redact_config(config),
+            }))
         logging.basicConfig(
             level=logging.WARNING,
             format="%(asctime)s %(levelname)s %(name)s: %(message)s",

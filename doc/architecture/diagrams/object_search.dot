@@ -4,8 +4,8 @@ digraph Search {
   edge [color="#61738A", penwidth=1.5, arrowsize=0.8, fontname="Noto Sans CJK SC", fontsize=16, fontcolor="#506078"];
 
   start [label="获取当前同步观测\nRGB-D / odom"];
-  det [label="① 上层调用 VLM\n检测 / 歧义时复核"];
-  match [shape=diamond, style=filled, fillcolor="#FFF6DC", color="#D5B762", label="确认匹配？", margin="0.07,0.02"];
+  det [label="① 上层调用 VLM\nSimple 检测：候选框 / None"];
+  bbox [shape=diamond, style=filled, fillcolor="#FFF6DC", color="#D5B762", label="有有效候选框？", margin="0.07,0.02"];
   depth [shape=diamond, style=filled, fillcolor="#FFF6DC", color="#D5B762", label="深度有效？", margin="0.07,0.02"];
   locate [label="深度定位 → 计算接近点\n按用户或配置的停距"];
   follow [label="上层持续请求 XNavDP\n校验后交 tracker 接近\n上层负责目标刷新"];
@@ -14,17 +14,17 @@ digraph Search {
   short [label="沿框方向选安全短目标\n0.30–0.60 m\nRGB-D ＋ 新鲜 LiDAR"];
   safe [shape=diamond, style=filled, fillcolor="#FFF6DC", color="#D5B762", label="有安全短目标？", margin="0.06,0.02"];
   step [label="调用 XNavDP / 校验路径\n通过后 tracker 短步\n最多跟踪约 2 s", fillcolor="#E9F6EF", color="#7AB79A"];
-  fresh [label="先停车，再取新同步帧\n返回 ① 检测与复核", fillcolor="#E9F6EF", color="#7AB79A"];
+  fresh [label="先停车，再取新同步帧\n返回 ① 重新检测", fillcolor="#E9F6EF", color="#7AB79A"];
 
   remain [shape=diamond, style=filled, fillcolor="#FFF6DC", color="#D5B762", label="还有未扫方向？", margin="0.06,0.02"];
   sweep [label="调用 tracker 原地转向\n首帧 0°，间隔 60°\n60/120/180/240/300°", fillcolor="#E9F6EF", color="#7AB79A"];
-  scanview [label="停车 → 获取新同步帧\n返回 ① 检测与复核", fillcolor="#E9F6EF", color="#7AB79A"];
+  scanview [label="停车 → 获取新同步帧\n返回 ① 重新检测", fillcolor="#E9F6EF", color="#7AB79A"];
   end [label="结束并报告结果\n未找到 / 未取得有效深度", fillcolor="#F0F2F5", color="#A5AFBA"];
   note [shape=plain, style="", label="实机运动前检查观测新鲜度与碰撞。\n取消 / 超时 / 异常：清计划并输出零速。\npreview / bag 等待外部新视角，不主动发速度。", fontsize=16, fontcolor="#506078"];
 
-  start -> det -> match [weight=50];
-  match -> depth [label="是", weight=50];
-  match -> remain [label="未见 / 不符\n或仍无法确认", minlen=3];
+  start -> det -> bbox [weight=50];
+  bbox -> depth [label="是", weight=50];
+  bbox -> remain [label="无框 / 回包无法解析", minlen=3];
   depth -> locate [label="是"];
   locate -> follow -> arrived;
   depth -> short [label="否", weight=50];

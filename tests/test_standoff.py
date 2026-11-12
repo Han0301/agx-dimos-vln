@@ -14,7 +14,7 @@ import pytest
     ("找门旁 0.8 米高的灭火器箱", None),
 ])
 def test_explicit_standoff_distinguishes_object_size_and_location(text, expected):
-    from dimos.plugins.vln_task.standoff import requested_standoff
+    from dimos.vln_task.standoff import requested_standoff
 
     assert requested_standoff(text) == expected
 
@@ -22,9 +22,9 @@ def test_explicit_standoff_distinguishes_object_size_and_location(text, expected
 @pytest.mark.parametrize("visible_first", [True, False])
 def test_original_request_distance_reaches_real_localization_even_after_a_miss(visible_first):
     from dimos.plugins.active_search.search import ActiveSearch
-    from dimos.plugins.vln_task.agent import TaskAgent
-    from dimos.plugins.vln_task.find_object import FindObject
-    from dimos.plugins.vln_task.preview import NavigationPreview
+    from dimos.vln_task.agent import TaskAgent
+    from dimos.vln_task.find_object import FindObject
+    from dimos.vln_task.preview import NavigationPreview
 
     def frame(stamp):
         return NS(
@@ -45,7 +45,7 @@ def test_original_request_distance_reaches_real_localization_even_after_a_miss(v
     def query(*args, stamp_ns, **kwargs):
         found = visible_first or stamp_ns > 100
         return {
-            "text": '[{"bbox_2d":[400,400,600,600],"label":"box","appearance_match":"match"}]' if found else "[]",
+            "text": '{"name":"box","bbox":[400,400,600,600]}' if found else "None",
             "elapsed_ms": 1,
         }
 
@@ -90,7 +90,7 @@ def test_background_detection_reuses_task_distance():
     from collections import deque
     from threading import Event
 
-    from dimos.plugins.vln_task.approach import ContinuousApproach
+    from dimos.vln_task.approach import ContinuousApproach
 
     stop = Event()
     updates = deque(maxlen=1)
@@ -114,3 +114,34 @@ def test_background_detection_reuses_task_distance():
     finally:
         controller.close()
     assert stop.is_set()
+
+
+def test_approach_refresh_limits_xy_distance_from_original_target():
+    from threading import Event
+
+    from dimos.vln_task.agent import TaskCancelled
+    from dimos.vln_task.target_refresh import TargetRefresh
+
+    samples = iter([(0.6, 0., 2.), (1.2, 0., 0.), (0., 1., 0.)])
+
+    def observe(check, *, after_stamp_ns, max_age_s):
+        return NS(stamp_ns=after_stamp_ns + 1, odom=NS(header=NS(frame_id="world")))
+
+    def detect(frame, target, check):
+        xyz = next(samples, None)
+        if xyz is None:
+            raise TaskCancelled("End of observations")
+        return {"status": "localized", "world_frame": "world",
+                "target_xyz": xyz, "goal_xy": xyz[:2]}
+
+    controller = TargetRefresh()
+    controller.refresh_interval_s = 0
+    controller.observe = observe
+    controller.detect = detect
+    updates = []
+    controller._refresh_targets(
+        "box", {"observation": {"stamp_ns": 1}, "world_frame": "world",
+                "target_xyz": [0., 0., 0.]},
+        lambda: 5, Event(), Event(), updates,
+    )
+    assert [update["target_xyz"] for update in updates] == [(0.6, 0., 2.), (0., 1., 0.)]

@@ -5,15 +5,16 @@ import logging
 from dimos.vln_task.search.search import SCAN_STATUSES, SEARCH_SEED_STATUSES
 from dimos.plugins.runtime_log import event, event_context
 
-logger = logging.getLogger('dimos.plugins.vln_task.find_object')
+logger = logging.getLogger('dimos.vln_task.find_object')
 
 
 class FindObject:
-    def __init__(self, observe, detect, explore, localized):
+    def __init__(self, observe, detect, explore, localized, *, search_branch="rotation_scan"):
         self.observe = observe
         self.detect = detect
         self.explore = explore
         self.localized = localized
+        self.search_branch = search_branch
 
     def __call__(self, target, remaining, on_progress, cancel, *, stop_m=None):
         if not isinstance(target, str) or not target.strip() or len(target) > 1000:
@@ -27,7 +28,7 @@ class FindObject:
         remaining()
         branch = {
             "localized": "localized_goal",
-            **dict.fromkeys(SCAN_STATUSES, "rotation_scan"),
+            **dict.fromkeys(SCAN_STATUSES, self.search_branch),
             "invalid_depth": "recover_depth",
         }.get(result["status"], "end")
         event(logger, "first_detection_branch", rgb_stamp_ns=frame.stamp_ns,

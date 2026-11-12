@@ -1,6 +1,6 @@
 def test_summary_uses_successful_latencies_and_reports_failures():
     try:
-        from dimos.plugins.vln_task.benchmark import summarize
+        from dimos.vln_task.benchmark import summarize
     except ModuleNotFoundError:
         __import__("pytest").fail("Agent benchmark is missing")
     result = summarize(
@@ -16,23 +16,18 @@ def test_summary_uses_successful_latencies_and_reports_failures():
     assert result["semantic_pass"] == 1
 
 
-def test_legacy_benchmark_propagates_failure_exit_code():
+def test_benchmark_cli_rejects_nonpositive_sample_count():
     import subprocess
     import sys
     from pathlib import Path
 
-    script = """
-import runpy
-import sys
-from types import ModuleType
-benchmark = ModuleType("dimos.vln_task.benchmark")
-benchmark.main = lambda: 7
-sys.modules[benchmark.__name__] = benchmark
-runpy.run_module("dimos.plugins.vln_task.benchmark", run_name="__main__")
-"""
     result = subprocess.run(
-        [sys.executable, "-c", script],
+        [
+            sys.executable, "-m", "dimos.vln_task.benchmark",
+            "--image", "unused.jpg", "--output", "unused.json", "--samples", "0",
+        ],
         cwd=Path(__file__).resolve().parents[1],
         capture_output=True, text=True, timeout=10,
     )
-    assert result.returncode == 7, result.stderr
+    assert result.returncode == 2, result.stderr
+    assert "samples must be positive" in result.stderr

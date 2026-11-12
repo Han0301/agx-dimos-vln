@@ -21,11 +21,11 @@ python -m dimos.vln_task.benchmark --image path/to/shapes.jpg --output path/to/b
 
 ## 调用链与兼容
 
-`agent.py` 管理 LLM 工具调用；`find_object.py` 分派首帧结果；`search/` 组织扫视、定向靠近和复检；`perception.py` 负责检测、复核与定位；`preview.py` 组合路径和速度预览；`approach.py` 持续更新规划，`target_refresh.py` 管理接近中的目标刷新。`assembly.py` 装配客户端与跟踪器，`web.py` 提供模型预热及任务状态展示策略。
+`agent.py` 管理 LLM 工具调用；`find_object.py` 分派首帧结果；`search/` 组织扫视、定向靠近和复检；`perception.py` 负责检测与定位；`preview.py` 组合路径和速度预览；`approach.py` 持续更新规划，`target_refresh.py` 管理接近中的目标刷新。`assembly.py` 装配客户端与跟踪器，`web.py` 提供模型预热及任务状态展示策略。
 
 LLM/VLM 只调用模型，XNavDP 只请求和校验路径，tracker 保留控制及停止保护。任务策略由 VLN Task 组织。`web_input/transport.py` 提供可注入 runner 的通用 HTTP、队列及取消接口。
 
-原 `dimos.plugins.vln_task` 与 `dimos.plugins.active_search` Python 路径保留为兼容入口，转到同一份上层实现；现有配置路径、参数、模型提示词、消息协议和启动脚本沿用原值。
+旧搜索路径 `dimos.plugins.active_search` 转调 `dimos.vln_task.search`。
 
 ## 整合路径预览
 
@@ -39,14 +39,16 @@ bash sh/start_web_input.sh --profile config/profiles/vln_preview.yaml
 bash sh/run_rviz.sh
 ```
 
-D455 预览读取现有压缩 JPEG、对齐 PNG 深度、CameraInfo 和 PoseStamped odom。选择接近 RGB 时间的深度与位姿，超过 150 ms 记录告警并继续。冻结观测后请求归一化二维框，以实测深度和 `body_config` 的相机安装位置及俯仰角计算世界坐标接近点。坐标转换采用 D455 光学轴到本体轴的映射，回放使用与录制安装一致的外参。时间戳来自原消息，等待和缓存使用单调时钟。
+D455 预览读取现有压缩 JPEG、对齐 PNG 深度、CameraInfo 和 PoseStamped odom。预览、探索建图和记忆写入都使用与 RGB 时间最接近的深度和位姿。配对时间差超过 150 ms 时记录告警并继续。冻结观测后请求归一化二维框，以实测深度和 `body_config` 的相机安装位置及俯仰角计算世界坐标接近点。坐标转换采用 D455 光学轴到本体轴的映射，回放使用与录制安装一致的外参。时间戳来自原消息，等待和缓存使用单调时钟。
 
 装配时先订阅相机输入并建立 XNavDP 目标和结果话题端点，DDS 在等待任务期间完成发现。每次规划仍检查发布者独占、服务状态及原始 RGB 时间戳关联，取消或过期的响应丢弃。结果的 `timing_ms` 分别记录观测等待、DDS 发现与检查、服务就绪、规划往返和校验。
 
 Web worker 启动时按 profile 中的 `llm_preload_timeout_s` 预加载 Ollama 模型。网页可立即打开和提交，队列在预加载结束后开始执行。通过 `/health` 的 `llm_warmup` 查看状态和耗时。预加载失败会记录日志，后续任务继续按正常流程调用模型。省略该设置或置为 `null` 可跳过预加载。
 
-tracker 用通过校验的路径和计算时最新的深度与里程计做一次速度预览。任一数据缺失或接收超过 0.5 秒，返回零速及 `tracking_inputs_stale`。RViz 使用原生路径、候选和目标。该 profile 只计算一次速度预览。实机持续规划入口见 [VLN 启动与排查 skill](../../../doc/skills/vln-operations/SKILL.md#实机-go2)。上传图片仍用于独立问答。`locate_visible_object` 输出可见目标的位置，`preview_approach` 继续规划。加 `--locate-only` 只注册定位技能，适合尚未准备好 XNavDP 的回放测试。
+tracker 用通过校验的路径和计算时最新的深度与里程计做一次速度预览。任一数据缺失或接收超过 0.5 秒，返回零速及 `tracking_inputs_stale`。RViz 使用原生路径、候选和目标。该 profile 只计算一次速度预览。实机持续规划入口见 [VLN 启动与排查 skill](../../../doc/skills/vln-operations/SKILL.md#实机-go2)。`locate_visible_object` 输出可见目标的位置，`preview_approach` 继续规划。加 `--locate-only` 只注册定位技能，适合尚未准备好 XNavDP 的回放测试。
 
-找物时，Agent 把完整目标描述交给 `find_object`。DET 提示词包含目标描述、框坐标格式和返回状态。候选返回 `label`、`bbox_2d` 和 `appearance_match`。有框但判断不确定时做一次带上下文的视觉复核，确认命中后用深度定位。明确未见目标或候选不匹配时，进入 [原地扫视](../active_search/README.md)。确认匹配但深度无效时，实机优先沿 bbox 方向定向靠近。用 `--goal "搜索多个视角里的白色脚踏垃圾桶，确认后预览接近路径"` 调用。网页显示检测、搜索、复核和结束状态。profile 中的 `active_search_config` 引用搜索配置。
+找物时，Agent 把完整目标描述交给 `find_object`。检测提示词要求可见时返回单个 `{"name": "...", "bbox": [x1, y1, x2, y2]}`，不可见时返回 `None`。解析只使用 `bbox`，按 Simple 的 Qwen3 路径把 0–1000 坐标换算到图像像素后取深度。找物流程直接用候选框定位。没有框或回复无法解析时进入 [主动找物](../active_search/README.md)。有框但深度无效时，实机优先沿框方向定向靠近。用 `--goal "搜索多个视角里的白色脚踏垃圾桶，找到后预览接近路径"` 调用。网页显示检测、搜索和结束状态。profile 中的 `active_search_config` 引用搜索配置。
 
-找物指令可指定停距，例如「找到灭火器箱，停在距目标约 0.8 米处」。停距应用于初次定位和接近中的目标刷新，默认值来自 profile 的 `approach_stop_m`。实机 tracker 以里程计原点到估计目标点的水平距离检查停距，到达后发零速并结束该次接近。接近中的目标刷新只采用 VLM 明确命中且定位有效的候选，歧义候选沿用上一有效坐标。核查停车时，在终端 3 的 tracker 日志和终端 1 的基座日志分别确认零速发布与转发。
+启用了 `find_object` 的 profile 下，网页提交文字和参考图后，任务层先让 VLM 从参考图提取外观，再将外观补进目标描述，用单张 D455 帧进行检测。指令中明确指定的属性、位置和排除条件优先。检测返回现场帧上的归一化框，任务层用该帧的深度和位姿定位。图片问答调用 `inspect_image`。
+
+找物指令可指定停距，例如「找到灭火器箱，停在距目标约 0.8 米处」。停距应用于初次定位和接近中的目标刷新，默认值来自 profile 的 `approach_stop_m`。实机 tracker 以里程计原点到估计目标点的水平距离检查停距，到达后发零速并结束该次接近。接近中用定位有效的候选框刷新目标。新物体位置与开始接近时的物体位置在世界坐标系下的 XY 欧氏距离超过 1 米时，丢弃该次刷新。无框、定位失败或刷新被拒绝时沿用上一有效坐标。核查停车时，在终端 3 的 tracker 日志和终端 1 的基座日志分别确认零速发布与转发。

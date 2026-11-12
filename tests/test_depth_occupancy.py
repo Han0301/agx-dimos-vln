@@ -89,11 +89,31 @@ def test_stale_duplicate_invalid_and_foreign_inputs_do_not_refresh_map():
     foreign = observation(stamp=12, frame="odom")
     foreign.depth[24, 20] = 1.25
     assert not grid.update(foreign, now=10.4)
-    mismatched = observation(stamp=13, gap_ms=151)
-    mismatched.depth[24, 20] = 1.25
-    assert not grid.update(mismatched, now=10.4)
     assert grid.snapshot(now=10.4, frame="odom") is None
     assert grid.snapshot(now=10.51, frame="world") is None
+
+
+def test_depth_pair_gap_does_not_prevent_exploration_map_update():
+    grid = mapper()
+    sample = observation(gap_ms=559.4)
+    sample.depth[24, 20] = 1.25
+    assert grid.update(sample, now=10.)
+    assert grid.snapshot(now=10.).stamp_ns == sample.stamp_ns
+
+
+def test_exploration_lidar_warns_on_pair_gap_but_keeps_recent_world_cloud(monkeypatch, caplog):
+    from dimos.vln_task.search import exploration, occupancy
+
+    monkeypatch.setattr(exploration.time, "monotonic", lambda: 10.)
+    monkeypatch.setattr(occupancy, "decode_world_lidar", lambda *_: np.array([[1., 2., 3.]]))
+    cloud = exploration.ExplorationCloud(None, None)
+    cloud._receive(NS(header=NS(stamp=NS(sec=2, nanosec=0))))
+    odom = NS(header=NS(stamp=NS(sec=1, nanosec=0), frame_id="world"), pose=NS(position=NS(z=0.)))
+
+    sample = cloud.read(odom)
+
+    assert sample.stamp_ns == 2_000_000_000
+    assert "1000.0 ms" in caplog.text
 
 
 def test_world_voxel_points_never_ray_carve_and_obstacles_dominate():

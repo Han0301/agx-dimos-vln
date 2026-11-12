@@ -6,8 +6,9 @@ topics:
   odom: /odom
   depth: /camera/camera/aligned_depth_to_color/image_raw
   lidar: null
-  costmap: null
+  costmap: /global_costmap
   cmd_vel: /cmd_vel
+costmap_lidar: /lidar
 depth_scale: 1000.0
 # XNavDP tracking speed and MPC parameters.
 controller:

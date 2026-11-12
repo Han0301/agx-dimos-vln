@@ -9,7 +9,8 @@ from dimos.plugins.runtime_log import event
 from .agent import TaskCancelled
 from .observation import TRACKING_MAX_AGE_S
 
-logger = logging.getLogger("dimos.plugins.vln_task.approach")
+logger = logging.getLogger("dimos.vln_task.approach")
+_MAX_REFRESH_DISTANCE_M = 1.0
 
 
 class TargetRefresh:
@@ -19,6 +20,7 @@ class TargetRefresh:
         stamp = initial["observation"]["stamp_ns"]
         world_frame = initial["world_frame"]
         last_xyz = initial["target_xyz"]
+        initial_xy = tuple(last_xyz[:2])
         standoff = initial.get("standoff_m")
         options = {"stop_m": standoff} if standoff is not None else {}
 
@@ -42,6 +44,7 @@ class TargetRefresh:
                           stamp_ns=stamp, expected_world_frame=world_frame,
                           world_frame=frame.odom.header.frame_id)
                     continue
+                next_check = time.monotonic() + self.refresh_interval_s
                 result = self.detect(frame, target, check, **options)
                 check()
             except TaskCancelled:
@@ -56,13 +59,16 @@ class TargetRefresh:
                 event(logger, "target_refresh", outcome="rejected", stamp_ns=stamp,
                       reason=result["status"] if result["status"] != "localized" else "world_frame_changed")
                 continue
+            distance = math.dist(result["target_xyz"][:2], initial_xy)
+            if distance > _MAX_REFRESH_DISTANCE_M:
+                logger.info("target refresh rejected stamp_ns=%d distance_from_initial_xy_m=%.3f",
+                            stamp, distance)
+                event(logger, "target_refresh", outcome="rejected", reason="too_far_from_initial_target",
+                      stamp_ns=stamp, distance_from_initial_xy_m=distance)
+                continue
             shift = math.dist(result["target_xyz"], last_xyz)
-            if shift <= self.max_target_shift_m:
-                last_xyz = result["target_xyz"]
-                updates.append(result)
-                logger.info("target refreshed stamp_ns=%d goal_xy=%s", stamp, result["goal_xy"])
-                event(logger, "target_refresh", outcome="accepted", stamp_ns=stamp,
-                      shift_m=shift, target_xyz=last_xyz, goal_xy=result["goal_xy"])
-            else:
-                event(logger, "target_refresh", outcome="rejected", stamp_ns=stamp,
-                      reason="target_shift", shift_m=shift, max_shift_m=self.max_target_shift_m)
+            last_xyz = result["target_xyz"]
+            updates.append(result)
+            logger.info("target refreshed stamp_ns=%d goal_xy=%s", stamp, result["goal_xy"])
+            event(logger, "target_refresh", outcome="accepted", stamp_ns=stamp,
+                  shift_m=shift, target_xyz=last_xyz, goal_xy=result["goal_xy"])

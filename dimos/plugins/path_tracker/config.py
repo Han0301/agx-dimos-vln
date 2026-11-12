@@ -22,7 +22,7 @@ def load_config(path=DEFAULT):
     }
     if (
         not isinstance(cfg, dict)
-        or set(cfg) != expected
+        or not expected <= cfg.keys() <= expected | {"costmap_lidar"}
         or cfg["plugin"] != "path_tracker"
     ):
         raise ValueError(f"expected path_tracker config sections: {sorted(expected)}")
@@ -43,6 +43,16 @@ def load_config(path=DEFAULT):
             continue
         if not isinstance(value, str) or not value.startswith("/") or value == "/":
             raise ValueError(f"invalid topic: {name}")
+    lidar_source = cfg.get("costmap_lidar")
+    if lidar_source is not None and (
+        not isinstance(lidar_source, str)
+        or not lidar_source.startswith("/")
+        or lidar_source == "/"
+        or topics["costmap"] is None
+        or lidar_source == topics["costmap"]
+        or topics["lidar"] is not None
+    ):
+        raise ValueError("costmap_lidar requires a separate costmap topic and lidar: null")
     expected_controller = {
         "tick_rate_hz",
         "mpc_horizon",

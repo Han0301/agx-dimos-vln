@@ -50,7 +50,7 @@ def test_perception_localizes_without_constructing_a_planner_or_tracker():
     from dimos.vln_task.perception import ObjectPerception
 
     vlm = NS(config={"timeout_s": 2}, query=lambda *a, **kw: {
-        "text": json.dumps([{"bbox_2d": [400, 400, 600, 600], "label": "bin", "appearance_match": "match"}]),
+        "text": json.dumps({"name": "bin", "bbox": [400, 400, 600, 600]}),
         "elapsed_ms": 5,
     })
     frame = NS(
@@ -85,7 +85,7 @@ with TestClient(create_app(load_config("web_input"), Runner)) as web:
     result = web.get("/tasks/" + submitted["task_id"], params={"wait_s": 2}).json()
     assert result["status"] == "succeeded", result
     assert result["result"] == {"answer": "HELLO"}, result
-assert not any(name.startswith(("dimos.vln_task", "dimos.plugins.vln_task", "dimos.plugins.llm", "dimos.plugins.vlm", "dimos.plugins.path_tracker", "rclpy")) for name in sys.modules)
+assert not any(name.startswith(("dimos.vln_task", "dimos.plugins.llm", "dimos.plugins.vlm", "dimos.plugins.path_tracker", "rclpy")) for name in sys.modules)
 '''
     completed = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=20)
     assert completed.returncode == 0, completed.stderr

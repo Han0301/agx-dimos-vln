@@ -11,6 +11,8 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 
 from dimos.plugins.path_tracker.messages import odom_pose
+from dimos.plugins.path_tracker.tracker import TURN_TOLERANCE_RAD
+from dimos.plugins._agent_common import TaskCancelled
 from dimos.plugins.runtime_log import event
 from dimos.vln_task.observation import TRACKING_MAX_AGE_S
 from dimos.vln_task.perception import optical_ray
@@ -19,6 +21,16 @@ from dimos.plugins.xnavdp.client import stamp_ns
 from .search import ExplorationUnavailable
 
 logger = logging.getLogger('dimos.plugins.active_search.exploration')
+
+
+def observe_stopped(observe, newest_stamp, previous_stamp, remaining, settle_s, **options):
+    """Wait for samples received after the stop and settling window."""
+    settled_at = time.monotonic() + settle_s
+    after_stamp = max(previous_stamp, newest_stamp())
+    return observe(
+        remaining, after_stamp_ns=after_stamp, received_after=settled_at,
+        max_age_s=TRACKING_MAX_AGE_S, **options,
+    )
 
 
 class ExplorationCloud:
@@ -58,14 +70,20 @@ class ExplorationCloud:
         age = time.monotonic() - received
         odom_stamp = stamp_ns(odom.header)
         gap = abs(stamp - odom_stamp)
-        if age > 0.75 or gap > 750_000_000:
+        if age > 0.75:
             event(
-                logger, "exploration_lidar_rejected",
-                reason="stale" if age > 0.75 else "odom_stamp_gap",
+                logger, "exploration_lidar_rejected", reason="stale",
                 lidar_stamp_ns=stamp, odom_stamp_ns=odom_stamp,
                 age_ms=age * 1000, gap_ms=gap / 1e6,
             )
             return None
+        if gap > 750_000_000:
+            logger.warning(
+                "Exploration LiDAR/odom timestamp gap: %.1f ms; using latest world-frame cloud",
+                gap / 1e6,
+            )
+            event(logger, "exploration_lidar_gap", lidar_stamp_ns=stamp,
+                  odom_stamp_ns=odom_stamp, age_ms=age * 1000, gap_ms=gap / 1e6)
         try:
             points = decode_world_lidar(message, odom.header.frame_id)
         except (ValueError, TypeError) as exc:
@@ -85,7 +103,10 @@ class ExplorationCloud:
 class RotationSweep:
     """Sample five headings spaced 60 degrees from the first observation."""
 
-    def __init__(self, observe, newest_stamp, turn, first, cancel, *, settle_s=0.15):
+    def __init__(
+        self, observe, newest_stamp, turn, first, cancel, *, settle_s=0.15,
+        heading_offsets=range(60, 360, 60), leg=None,
+    ):
         self.observe = observe
         self.newest_stamp = newest_stamp
         self.turn = turn
@@ -93,39 +114,52 @@ class RotationSweep:
         self.initial_yaw = pose[2]
         self.headings = iter(
             math.remainder(self.initial_yaw + math.radians(angle), math.tau)
-            for angle in range(60, 360, 60)
+            for angle in heading_offsets
         )
         self.cancel = cancel
         self.settle_s = settle_s
+        self.leg = leg or {"leg_kind": "rotation"}
 
     def __call__(self, previous, remaining, on_progress):
         yaw = next(self.headings, None)
         if yaw is None:
             return None
         leg = {
-            "leg_kind": "rotation", "source_stamp_ns": previous.stamp_ns,
+            **self.leg, "source_stamp_ns": previous.stamp_ns,
             "goal_yaw": yaw, "world_frame": self.world_frame,
         }
         event(logger, "exploration_leg_started", **leg)
-        reason = self.turn(yaw, self.world_frame, remaining)
-        remaining()
-        if reason is not None:
-            event(logger, "exploration_leg_finished", **leg, reason=reason)
-            raise ExplorationUnavailable(reason)
-        self.cancel.wait(min(self.settle_s, remaining()))
-
         def accept_odom(odom):
             pose, frame = odom_pose(odom)
             return frame == self.world_frame and abs(
                 math.remainder(yaw - pose[2], math.tau)
-            ) <= math.radians(5)
+            ) <= TURN_TOLERANCE_RAD
 
-        stopped = self.observe(
-            remaining, after_stamp_ns=max(previous.stamp_ns, self.newest_stamp()),
-            accept_odom=accept_odom, max_age_s=TRACKING_MAX_AGE_S,
-        )
+        phase = "turn"
+        try:
+            reason = self.turn(yaw, self.world_frame, remaining)
+            remaining()
+            if reason is not None:
+                raise ExplorationUnavailable(reason)
+            phase = "stopped_observation"
+            stopped = observe_stopped(
+                self.observe, self.newest_stamp, previous.stamp_ns, remaining, self.settle_s,
+                accept_odom=accept_odom,
+            )
+        except Exception as exc:
+            if isinstance(exc, ExplorationUnavailable):
+                reason = str(exc)
+            elif isinstance(exc, TaskCancelled):
+                reason = "task_cancelled"
+            elif isinstance(exc, TimeoutError):
+                reason = "no_new_view" if phase == "stopped_observation" else "timeout"
+            else:
+                reason = type(exc).__name__
+            event(logger, "exploration_leg_finished", **leg, reason=reason,
+                  phase=phase, error_type=type(exc).__name__)
+            raise
         event(logger, "exploration_leg_finished", **leg, reason="new_view",
-              stopped_stamp_ns=stopped.stamp_ns)
+              stopped_stamp_ns=stopped.stamp_ns, observation_id=getattr(stopped, "observation_id", None))
         return stopped
 
 
@@ -269,10 +303,8 @@ class DirectedExploration:
             event(logger, "exploration_leg_finished", **leg, reason="no_accepted_path",
                   elapsed_ms=(time.monotonic() - started) * 1000)
             return None
-        self.cancel.wait(min(self.settle_s, budget()))
-        stopped_frame = self.observe(
-            budget, after_stamp_ns=max(seed.stamp_ns, self.newest_stamp()),
-            max_age_s=TRACKING_MAX_AGE_S,
+        stopped_frame = observe_stopped(
+            self.observe, self.newest_stamp, seed.stamp_ns, budget, self.settle_s,
         )
         stopped_pose, frame = odom_pose(stopped_frame.odom)
         if frame != world_frame:

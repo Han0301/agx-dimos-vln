@@ -79,7 +79,6 @@ class DepthOccupancyMap:
         extent_m=10.0,
         footprint_radius=0.30,
         max_depth_m=4.0,
-        max_pair_gap_ms=150.0,
         max_age_s=2.0,
         floor_z_base_m=-0.30,
     ):
@@ -93,7 +92,7 @@ class DepthOccupancyMap:
             raise ValueError("Invalid D455 installation transform")
         distances = (
             resolution, extent_m, footprint_radius, max_depth_m,
-            max_pair_gap_ms, max_age_s,
+            max_age_s,
         )
         if not all(math.isfinite(value) and value > 0 for value in distances):
             raise ValueError("Invalid exploration map distances")
@@ -104,7 +103,6 @@ class DepthOccupancyMap:
         self.size = math.ceil(extent_m / resolution)
         self.footprint_radius = footprint_radius
         self.max_depth = max_depth_m
-        self.max_pair_gap = max_pair_gap_ms
         self.max_age = max_age_s
         self.floor_z_base = floor_z_base_m
         self.grid = np.full((self.size, self.size), UNKNOWN, dtype=np.int8)
@@ -201,10 +199,6 @@ class DepthOccupancyMap:
             not frame
             or (self.frame is not None and frame != self.frame)
             or stamp <= self.last_stamp
-            or any(
-                not math.isfinite(gap) or gap > self.max_pair_gap
-                for gap in (observation.depth_gap_ms, observation.odom_gap_ms)
-            )
         ):
             return False
         rows, cols, rays = self._sample_geometry(observation)

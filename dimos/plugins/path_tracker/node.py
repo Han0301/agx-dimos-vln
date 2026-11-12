@@ -4,6 +4,8 @@ import json
 import logging
 import time
 
+from dimos.plugins.runtime_log import event, recording_enabled
+
 from .messages import (
     OccupancyGrid,
     decode_depth,
@@ -47,6 +49,7 @@ class TrackerNode:
             self.output,
             depth_timeout_s=None if subscribe_results else MOTION_DEPTH_MAX_AGE_S,
             inputs_ready=inputs_ready,
+            costmap_timeout_s=1.0 if topics["costmap"] and not config["output_only"] else None,
         )
         latest = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
@@ -113,6 +116,15 @@ class TrackerNode:
                         )
                     else:
                         log.warning("Rejected %s input: %s", name, exc)
+                        if name == "costmap" and recording_enabled():
+                            with self.tracker.cv:
+                                event(
+                                    log, "tracker_costmap_rejected",
+                                    reason="invalid_message", error_type=type(exc).__name__, detail=str(exc),
+                                    incoming_costmap_stamp_ns=source_stamp_ns(message),
+                                    incoming_frame=getattr(getattr(message, "header", None), "frame_id", None),
+                                    **self.tracker._input_fields(),
+                                )
                     self.last_error[name] = now
 
         return receive
@@ -144,4 +156,4 @@ class TrackerNode:
         with self.tracker.cv:
             if not self.tracker.frame or msg.header.frame_id != self.tracker.frame:
                 raise ValueError("costmap frame differs from odom")
-        self.tracker.update_costmap(OccupancyGrid(msg))
+            self.tracker.update_costmap(OccupancyGrid(msg), stamp_ns=source_stamp_ns(msg))

@@ -12,6 +12,19 @@ logger = logging.getLogger("dimos.plugins.web_input.app")
 SEARCH_STATUS_LABELS = {
     "checking_current_view": "正在检查当前画面",
     "exploring": "正在转向扫描周围",
+    "checking_memory": "正在查询历史视角",
+    "planning_memory_goal": "正在规划前往历史视角的路径",
+    "tracking_memory_goal": "正在前往历史视角",
+    "replanning_memory_goal": "正在重新规划历史视角路径",
+    "turning_memory_goal": "正在对齐历史观察朝向",
+    "selecting_frontier": "正在选择可达前沿",
+    "planning_frontier": "正在规划前沿路径",
+    "replanning_frontier": "正在重新规划前沿路径",
+    "tracking_frontier": "正在前往前沿航点",
+    "waiting_exploration_view": "已结束移动，正在等待新观测",
+    "checking_exploration_view": "已停稳，正在检测新视角",
+    "frontier_cooldown": "前沿暂时冷却，正在换点",
+    "exploration_lookaround": "无可达前沿，正在转向补看",
     "exploring_toward_target": "正在朝目标方向换视角以恢复深度",
     "exploration_unavailable": "探索已停止，当前无法找到可达探索点",
     "invalid_depth": "目标深度无效",
@@ -30,6 +43,27 @@ SEARCH_STATUS_LABELS = {
     "not_visible": "当前未找到目标",
     "verification_unavailable": "暂时无法复核目标",
     "invalid_detection": "目标检测结果无效",
+}
+
+
+SEARCH_REASON_LABELS = {
+    "no_reachable_frontier": "没有可达前沿",
+    "no_new_view": "未取得停稳后的新观测",
+    "no_observation": "未取得有效观测",
+    "no_valid_exploration_map": "缺少有效探索地图",
+    "no_fresh_lidar": "未收到新鲜的 LiDAR 数据",
+    "exploration_lidar_stale": "LiDAR 数据已过期",
+    "exploration_frame_changed": "里程计坐标系已变化",
+    "observation_stale": "相机或里程计观测已过期",
+    "odom_stale": "里程计数据已过期",
+    "depth_stale": "深度数据已过期",
+    "costmap_stale": "控制代价地图已过期",
+    "turn_interrupted": "转向已中断",
+    "turn_already_active": "已有转向动作正在执行",
+    "tracker_stopped": "跟踪控制器已停止",
+    "no_accepted_path": "未取得通过校验的路径",
+    "tracking_timeout": "跟踪超时",
+    "task_timeout": "任务超时",
 }
 
 
@@ -59,13 +93,20 @@ class VLNWebPolicy:
     @staticmethod
     def result_fields(result):
         navigation = result.get("navigation") if isinstance(result, dict) else None
-        return {"navigation_status": navigation.get("status") if isinstance(navigation, dict) else None}
+        if not isinstance(navigation, dict):
+            return {"navigation_status": None}
+        fields = {"navigation_status": navigation.get("status")}
+        search = navigation.get("search")
+        if isinstance(search, dict) and search.get("reason"):
+            fields["search_reason"] = search["reason"]
+        return fields
 
     @staticmethod
     def status(task):
         state = task["status"]
         progress = task.get("progress", {})
         stage = progress.get("status")
+        reason = progress.get("reason")
         result = task["result"]
         navigation = result.get("navigation") if isinstance(result, dict) else None
         if state == "succeeded" and isinstance(navigation, dict):
@@ -81,9 +122,34 @@ class VLNWebPolicy:
                 "search_exhausted",
                 "verification_unavailable",
             }:
+                if final_stage != stage:
+                    reason = None
                 stage = final_stage
+                search = navigation.get("search")
+                if isinstance(search, dict) and search.get("reason"):
+                    reason = search["reason"]
         if stage in SEARCH_STATUS_LABELS:
             label = SEARCH_STATUS_LABELS[stage]
+            leg_id = progress.get("leg_id")
+            if stage == progress.get("status") and leg_id is not None:
+                label = f"第 {leg_id} 段 · {label}"
+            reason_label = SEARCH_REASON_LABELS.get(reason)
+            if reason and reason.startswith("collision_"):
+                reason_label = "碰撞检查阻止运动"
+            if stage == "exploration_unavailable" and reason:
+                label = "探索已停止"
+                reason_label = reason_label or reason
+            if stage == "frontier_cooldown" and reason:
+                reason_label = reason_label or reason
+            if reason_label and stage != "exploration_lookaround":
+                label = f"{label}（{reason_label}）"
+            previous = progress.get("last_frontier_failure")
+            if stage in {"selecting_frontier", "planning_frontier", "replanning_frontier"} and previous:
+                previous_reason = previous.get("reason")
+                previous_leg = previous.get("leg_id")
+                if previous_reason and previous_leg is not None:
+                    detail = SEARCH_REASON_LABELS.get(previous_reason, previous_reason)
+                    label = f"{label}（第 {previous_leg} 段{detail}）"
             if stage in {"searching", "confirming"}:
                 attempts, limit = (
                     progress.get("attempts"),
@@ -95,6 +161,7 @@ class VLNWebPolicy:
                 "status": f"{label} · {task['goal']}",
                 "stage": stage,
                 "task_id": task["task_id"],
+                **({"reason": reason} if reason else {}),
             }
         label = "navigating" if state == "running" else state
         return {"status": f"{label}: {task['goal']}"}

@@ -120,7 +120,8 @@ class Go2BodyBridge:
     def _on_command(self, msg):
         if not self.config["body"]["allow_motion"]:
             return
-        received_at = time.monotonic()
+        recording = recording_enabled()
+        received_at = time.monotonic() if recording else None
         requested = (msg.linear.x, msg.linear.y, msg.angular.z)
         b = self.config["body"]
         try:
@@ -130,28 +131,31 @@ class Go2BodyBridge:
             log.warning("rejected non-finite cmd_vel")
             return
         active = any(values)
-        first_command = self.last_command is None
+        first_command = recording and self.last_command is None
         transition = active != self.commands_active
         try:
             self.connection.move(*values)
         except Exception as exc:
-            event(
-                log, "body_command_failed", source="cmd_vel", received_velocity=requested,
-                forwarded_velocity=values, error_type=type(exc).__name__,
-                elapsed_ms=(time.monotonic() - received_at) * 1000,
-            )
+            if recording:
+                event(
+                    log, "body_command_failed", source="cmd_vel", received_velocity=requested,
+                    forwarded_velocity=values, error_type=type(exc).__name__,
+                    received_monotonic_ns=int(received_at * 1e9),
+                    elapsed_ms=(time.monotonic() - received_at) * 1000,
+                )
             raise
         self.last_command = time.monotonic()
+        if recording:
+            self._record_command("cmd_vel", requested, values, received_at, self.last_command)
         if transition:
             log.info(
                 "cmd_vel forwarded to Go2 active=%s linear_x=%.3f linear_y=%.3f angular_z=%.3f",
                 active, *values,
             )
-        if first_command or transition:
-            if recording_enabled():
-                with self.stop_lock:
-                    self.zero_forwarded_at = None if active else self.last_command
-                    self.stop_samples = 0 if transition and not active else None
+        if recording and (first_command or transition):
+            with self.stop_lock:
+                self.zero_forwarded_at = None if active else self.last_command
+                self.stop_samples = 0 if transition and not active else None
             event(
                 log, "body_command_forwarded", source="cmd_vel", active=active,
                 received_velocity=requested, forwarded_velocity=values,
@@ -161,23 +165,37 @@ class Go2BodyBridge:
             )
         self.commands_active = active
 
+    def _record_command(self, source, requested, forwarded, received_at, forwarded_at):
+        event(
+            log, "body_command_sample", source=source, active=any(forwarded),
+            received_velocity=requested, forwarded_velocity=forwarded,
+            received_monotonic_ns=int(received_at * 1e9),
+            forwarded_monotonic_ns=int(forwarded_at * 1e9),
+            forwarding_ms=(forwarded_at - received_at) * 1000,
+        )
+
     def _zero(self, reason):
         was_active = self.commands_active
         self.commands_active = False
-        if self.connection is not None:
-            started = time.monotonic()
-            self.connection.move(0.0, 0.0, 0.0)
-            forwarded_at = time.monotonic()
-            if was_active and recording_enabled():
-                with self.stop_lock:
-                    self.zero_forwarded_at = forwarded_at
-                    self.stop_samples = 0
-            event(
-                log, "body_command_forwarded", source=reason, active=False,
-                forwarded_velocity=(0.0, 0.0, 0.0),
-                forwarded_monotonic_ns=int(forwarded_at * 1e9),
-                forwarding_ms=(forwarded_at - started) * 1000,
-            )
+        if self.connection is None:
+            return
+        recording = recording_enabled()
+        started = time.monotonic() if recording else None
+        self.connection.move(0.0, 0.0, 0.0)
+        if not recording:
+            return
+        forwarded_at = time.monotonic()
+        self._record_command(reason, None, (0.0, 0.0, 0.0), started, forwarded_at)
+        if was_active:
+            with self.stop_lock:
+                self.zero_forwarded_at = forwarded_at
+                self.stop_samples = 0
+        event(
+            log, "body_command_forwarded", source=reason, active=False,
+            forwarded_velocity=(0.0, 0.0, 0.0),
+            forwarded_monotonic_ns=int(forwarded_at * 1e9),
+            forwarding_ms=(forwarded_at - started) * 1000,
+        )
 
     def _watchdog(self):
         if (

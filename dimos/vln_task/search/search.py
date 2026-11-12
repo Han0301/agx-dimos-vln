@@ -6,7 +6,9 @@ from dimos.plugins.runtime_log import event
 
 logger = logging.getLogger('dimos.plugins.active_search.search')
 
-SCAN_STATUSES = frozenset({"not_visible", "target_mismatch", "verification_unavailable"})
+SCAN_STATUSES = frozenset({
+    "not_visible", "target_mismatch", "verification_unavailable", "invalid_detection",
+})
 SEARCH_SEED_STATUSES = SCAN_STATUSES | {"invalid_depth"}
 
 
@@ -31,12 +33,12 @@ class ActiveSearch:
     def __call__(
         self, target, remaining, on_progress=None, *,
         next_view=None, initial_frame=None, initial_detection=None, stop_m=None,
-        toward_target=None,
+        toward_target=None, on_detection=None, exhausted_reason="sweep_complete",
     ):
         """Find the object, optionally obtaining a new stopped view by exploration.
 
         next_view(previous, budget, on_progress) must clear motion before returning
-        a newer observation. It returns None when all scan headings are sampled.
+        a newer observation. It returns None when exploration is exhausted.
         toward_target returns a stopped view after following a box bearing, or
         None to resume the scan.
         """
@@ -72,14 +74,17 @@ class ActiveSearch:
             seed_status=initial_detection.get("status") if initial_detection else None,
         )
 
-        def emit(status):
+        def emit(status, **fields):
             additional_attempts = max(0, len(attempts) - 1)
             event(logger, "search_stage", stage=status, attempts=additional_attempts,
-                  source_stamp_ns=frame.stamp_ns if frame is not None else None)
+                  source_stamp_ns=frame.stamp_ns if frame is not None else None, **fields)
             if on_progress is not None:
                 on_progress(
-                    {"status": status, "attempts": additional_attempts}
+                    {"status": status, "attempts": additional_attempts, **fields}
                 )
+
+        if on_detection is not None and initial_detection is not None:
+            on_detection(initial_frame, initial_detection)
 
         while True:
             try:
@@ -91,14 +96,16 @@ class ActiveSearch:
                         next_frame = toward_target(frame, depth_failure, remaining)
                         remaining()
                     if next_frame is None:
-                        emit("exploring")
+                        if on_detection is None:
+                            emit("exploring")
                         next_frame = next_view(frame, remaining, on_progress)
                         remaining()
                         if next_frame is None:
-                            reason = "sweep_complete"
+                            reason = exhausted_reason
                             break
                     depth_failure = None
-                    emit("searching")
+                    if on_detection is None:
+                        emit("searching")
                     explore = False
                 else:
                     emit("searching")
@@ -126,9 +133,12 @@ class ActiveSearch:
             )
             event(
                 logger, "search_detection", attempt=len(attempts), stamp_ns=frame.stamp_ns,
-                outcome=detection["status"], target_match=detection.get("target_match"),
+                observation_id=getattr(frame, "observation_id", None),
+                outcome=detection["status"],
                 timing_ms=detection.get("timing_ms"),
             )
+            if on_detection is not None:
+                on_detection(frame, detection)
             status = detection["status"]
             if status != "localized":
                 if next_view is not None:
@@ -157,7 +167,7 @@ class ActiveSearch:
             return {**result, "search": search}
 
         remaining()
-        emit(terminal_status)
+        emit(terminal_status, **({"reason": reason} if on_detection is not None else {}))
         elapsed_ms = (time.monotonic() - started) * 1000
         logger.info(
             "search ended status=%s reason=%s attempts=%d elapsed_ms=%.1f",

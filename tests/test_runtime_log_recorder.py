@@ -8,6 +8,8 @@ import sys
 import time
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 RECORD = """
 import sys
@@ -230,13 +232,34 @@ def test_recording_mirrors_new_complete_agent_and_tracker_metadata_only(tmp_path
             recorder.wait(timeout=5)
 
 
-def test_recorder_stop_preserves_registered_producer_and_optional_evidence(tmp_path):
+@pytest.mark.parametrize("extra_args,expected", [
+    ([], "failures"),
+    (["--evidence", "off"], "off"),
+])
+def test_recorder_cli_passes_evidence_mode(tmp_path, monkeypatch, extra_args, expected):
+    from dimos.plugins.runtime_log import recorder
+    from dimos.plugins.runtime_log.__main__ import main
+
+    def record(base, *, mode, evidence):
+        assert base == tmp_path
+        assert mode == "live"
+        assert evidence == expected
+        return 0
+
+    monkeypatch.setattr(recorder, "record", record)
+    monkeypatch.setattr(
+        sys, "argv", ["runtime_log", "record", "--root", str(tmp_path), "--mode", "live", *extra_args],
+    )
+    assert main() == 0
+
+
+def test_recorder_stop_preserves_registered_producer_and_default_evidence(tmp_path):
     output, spool, resume = (tmp_path / name for name in ("log", "spool", "resume"))
     recorder = subprocess.Popen(
         [
             sys.executable, "-c",
             "import sys; from dimos.plugins.runtime_log.recorder import record; "
-            "record(sys.argv[1], spool_root=sys.argv[2], evidence='failures')",
+            "record(sys.argv[1], spool_root=sys.argv[2])",
             str(output), str(spool),
         ],
         cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -247,6 +270,8 @@ def test_recorder_stop_preserves_registered_producer_and_optional_evidence(tmp_p
         _until(marker.is_file)
         session = json.loads(marker.read_text())
         dest = output / session["session"]
+        assert session["evidence"] == "failures"
+        assert json.loads((dest / "timing.jsonl").read_text().splitlines()[0])["evidence"] == "failures"
         producer = subprocess.Popen(
             [sys.executable, "-c", """
 import logging
@@ -257,11 +282,12 @@ from dimos.plugins import runtime_log as logs
 
 logs.SPOOL_ROOT = Path(sys.argv[1])
 resume = Path(sys.argv[2])
-logger = logging.getLogger("dimos.plugins.vln_task")
+logger = logging.getLogger("dimos.vln_task")
 with logs.capture("web_input"):
     with logs.task_context("demo"):
         path = logs.artifact("failed-frame.jpg", b"demo frame")
-        logs.event(logger, "before_stop", evidence_path=path)
+        response = logs.artifact("failed-response.txt", "demo model response")
+        logs.event(logger, "before_stop", evidence_path=path, response_path=response)
         deadline = time.monotonic() + 8
         while not resume.exists() and time.monotonic() < deadline:
             time.sleep(0.02)
@@ -288,6 +314,7 @@ with logs.capture("web_input"):
         assert stdout == b"still working\n"
         assert "after_stop" not in _read(event_path)
         assert (run / before["evidence_path"]).read_bytes() == b"demo frame"
+        assert (run / before["response_path"]).read_text() == "demo model response"
         assert before["task_id"] == "demo"
     finally:
         for process in (recorder, producer):

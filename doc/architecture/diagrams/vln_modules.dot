@@ -8,11 +8,11 @@ digraph Agent {
     graph [label="VLN Task｜独立上层\ndimos/vln_task/", fontsize=20, fontcolor="#215291", style="rounded,filled", fillcolor="#F5F9FF", color="#9DBCE6", penwidth=1.6, margin=15];
     policy [label="Web 适配\n预热 / 状态解释 → 注入 Web"];
     agent [label="Agent\n历史 / 期限 / 工具执行"];
-    find [label="find_object 找物工作流\n搜索 / 复核 / 深度定位\n扫视调用 tracker 转向"];
+    find [label="find_object 找物工作流\nSimple 检测 / 搜索 / 深度定位\n扫视调用 tracker 转向"];
     approach [label="接近策略\n刷新目标 / 持续规划 / 停距"];
     policy -> agent;
     agent -> find [label="执行工具"];
-    find -> approach [label="确认并定位"];
+    find -> approach [label="候选框定位成功"];
   }
   subgraph cluster_basic {
     graph [label="基础能力插件", fontsize=20, fontcolor="#28704D", style="rounded,filled", fillcolor="#F6FBF8", color="#9ACCB1", penwidth=1.6, margin=14];
@@ -33,6 +33,6 @@ digraph Agent {
   approach -> tracker [label="提交有效路径"];
   go2 [label="Go2 本体通信 · core ＋ robot\n转发速度 / 运动开关 / 超时保护", fillcolor="#F0F2F5", color="#A5AFBA"];
   tracker -> go2 [label="/cmd_vel"];
-  note [shape=plain, style="", label="上层决定何时搜索、复核、更新目标与停止。\n到达 / 取消 / 超时：清计划并输出零速。\npreview 只计算路径与一次速度；实机显式启用运动。", fontsize=16, fontcolor="#506078"];
+  note [shape=plain, style="", label="上层决定何时搜索、更新目标与停止。\n到达 / 取消 / 超时：清计划并输出零速。\npreview 只计算路径与一次速度；实机显式启用运动。", fontsize=16, fontcolor="#506078"];
   go2 -> note [style=invis];
 }

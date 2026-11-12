@@ -22,6 +22,7 @@ from ._writer import BackgroundWriter, ConsoleFile, LogFile
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_ROOT = PROJECT_ROOT / "data/log"
+DEFAULT_EVIDENCE = "failures"
 SPOOL_ROOT = PROJECT_ROOT / "run/logs/runtime_log"
 LOCAL_TIME = ZoneInfo("Asia/Shanghai")
 MODULE_NAME = re.compile(r"[a-z][a-z0-9_]*")
@@ -29,6 +30,9 @@ SCHEMA_VERSION = 2
 EVENT_QUEUE_SIZE = 1024
 _EVIDENCE_LIMIT = 16 * 1024 * 1024
 _EVIDENCE_ITEM_LIMIT = 1024 * 1024
+_DIAGNOSTIC_LIMIT = 128 * 1024 * 1024
+_DIAGNOSTIC_ITEM_LIMIT = 4 * 1024 * 1024
+_DIAGNOSTIC_FILE_LIMIT = 256
 _EVIDENCE_NAME = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_.-]{0,95}")
 _task_id = ContextVar("log_task_id", default=None)
 _event_fields = ContextVar("log_event_fields", default={})
@@ -89,6 +93,8 @@ def create_run(module, *, base=None, ros=False, pid=None, metadata=None):
         base = session["source"] if session else None
         if base is None and not os.environ.get("DIMOS_LOG_ROOT"):
             return None
+    if callable(metadata):
+        metadata = metadata()
     parent = module_directory(module, base)
     parent.mkdir(parents=True, exist_ok=True)
     pid = os.getpid() if pid is None else pid
@@ -164,6 +170,12 @@ def artifact(filename, data, **metadata):
     return None
 
 
+def diagnostic_artifact(filename, data, **metadata):
+    """Queue bounded replay data in any active recording."""
+    handler = _active_components
+    return handler.diagnostic_artifact(filename, data, metadata) if handler is not None else None
+
+
 class _Mirror:
     def __init__(self, stream, writer):
         self._stream = stream
@@ -231,6 +243,9 @@ class _TaskConsoleFormatter(logging.Formatter):
         return f"{record.levelname} [{component}]{task} {super().format(record)}"
 
 
+_TASK_LOG_NAMESPACES = ("dimos.plugins", "dimos.path_tracker", "dimos.vln_task")
+
+
 def _keep_http_access(record):
     # Uvicorn passes client, method, path (with query), HTTP version and status.
     if not isinstance(record.args, tuple) or len(record.args) != 5:
@@ -249,14 +264,14 @@ def task_console():
     """Show Web VLN events even when file recording is disabled."""
     root = logging.getLogger()
     access = logging.getLogger("uvicorn.access")
-    namespaces = ("dimos.plugins", "dimos.path_tracker")
     handler = logging.StreamHandler()
     handler.setFormatter(_TaskConsoleFormatter())
+    prefixes = tuple(f"{name}." for name in _TASK_LOG_NAMESPACES)
     handler.addFilter(
         lambda record: record.levelno >= logging.WARNING
         or (
             record.levelno >= logging.INFO
-            and record.name.startswith(("dimos.plugins.", "dimos.path_tracker"))
+            and (record.name in _TASK_LOG_NAMESPACES or record.name.startswith(prefixes))
         )
     )
     with ExitStack() as resources:
@@ -265,7 +280,7 @@ def task_console():
         resources.callback(root.removeHandler, handler)
         access.addFilter(_keep_http_access)
         resources.callback(access.removeFilter, _keep_http_access)
-        for name in namespaces:
+        for name in _TASK_LOG_NAMESPACES:
             logger = logging.getLogger(name)
             resources.callback(logger.setLevel, logger.level)
             if logger.getEffectiveLevel() > logging.INFO:
@@ -302,6 +317,10 @@ class _Components(logging.Handler):
         self._artifact_budget = _EVIDENCE_LIMIT
         self._artifact_count = count(1)
         self._artifact_lock = Lock()
+        self._diagnostic_files = 0
+        self._diagnostic_bytes = 0
+        self._diagnostic_rejected = {}
+        self._next_diagnostic_health = 0.0
         self._writer = BackgroundWriter(
             self._persist, self._finish, capacity=EVENT_QUEUE_SIZE, name="runtime-log",
             report=self._report,
@@ -334,15 +353,49 @@ class _Components(logging.Handler):
             if sequence > 32:
                 return None
             path = f"evidence/{sequence:03d}-{filename}"
-            record = logging.LogRecord(
-                "dimos.plugins.runtime_log", logging.INFO, "", 0, "artifact_saved", (), None,
-            )
-            record.runtime_fields = _snapshot_fields({
-                **metadata, "event": "artifact_saved", "path": path, "bytes": len(data),
-            })
-            if not self._writer.offer((path, data, record)):
+            if not self._queue_artifact(path, data, metadata, "artifact_saved"):
                 return None
             self._artifact_budget -= len(data)
+            return path
+
+    def _queue_artifact(self, path, data, metadata, name):
+        record = logging.LogRecord(
+            "dimos.plugins.runtime_log", logging.INFO, "", 0, name, (), None,
+        )
+        record.runtime_fields = _snapshot_fields({
+            **metadata, "event": name, "path": path, "bytes": len(data),
+        })
+        return self._writer.offer((path, data, record))
+
+    def _reject_diagnostic(self, reason):
+        count = self._diagnostic_rejected.get(reason, 0)
+        self._diagnostic_rejected[reason] = count + 1
+        if count == 0:
+            self.event("dimos.plugins.runtime_log", "diagnostic_artifact_rejected",
+                       _snapshot_fields({"reason": reason}))
+
+    def diagnostic_artifact(self, filename, data, metadata):
+        if isinstance(data, str) and len(data) <= _DIAGNOSTIC_ITEM_LIMIT:
+            data = data.encode("utf-8", errors="replace")
+        with self._artifact_lock:
+            if not isinstance(filename, str) or not _EVIDENCE_NAME.fullmatch(filename):
+                self._reject_diagnostic("invalid_name")
+                return None
+            if not isinstance(data, bytes) or not 0 < len(data) <= _DIAGNOSTIC_ITEM_LIMIT:
+                self._reject_diagnostic("item_size_or_type")
+                return None
+            if (
+                self._diagnostic_files >= _DIAGNOSTIC_FILE_LIMIT
+                or self._diagnostic_bytes + len(data) > _DIAGNOSTIC_LIMIT
+            ):
+                self._reject_diagnostic("archive_limit")
+                return None
+            path = f"diagnostics/{self._diagnostic_files + 1:03d}-{filename}"
+            if not self._queue_artifact(path, data, metadata, "diagnostic_artifact_saved"):
+                self._reject_diagnostic("queue_full")
+                return None
+            self._diagnostic_files += 1
+            self._diagnostic_bytes += len(data)
             return path
 
     def _persist(self, item):
@@ -371,6 +424,11 @@ class _Components(logging.Handler):
             self._files[component] = LogFile(self._directory / f"{component}.jsonl")
         line = (self._formatter.format(record) + "\n").encode("utf-8", errors="backslashreplace")
         self._files[component].write(line)
+        if self._diagnostic_files or self._diagnostic_rejected:
+            now = time.monotonic()
+            if now >= self._next_diagnostic_health:
+                self._next_diagnostic_health = now + 1.0
+                self._report_diagnostics()
 
     def _report(self, dropped, errors):
         health = self._run_dir / "writer_health.json"
@@ -381,6 +439,17 @@ class _Components(logging.Handler):
         )
         temporary.replace(health)
 
+    def _report_diagnostics(self):
+        with self._artifact_lock:
+            summary = {
+                "queued_files": self._diagnostic_files, "queued_bytes": self._diagnostic_bytes,
+                "rejected": dict(self._diagnostic_rejected),
+            }
+        health = self._run_dir / "diagnostic_health.json"
+        temporary = health.with_suffix(".tmp")
+        temporary.write_text(json.dumps(summary) + "\n", encoding="utf-8")
+        temporary.replace(health)
+
     def _finish(self, dropped, errors):
         for sink in self._files.values():
             try:
@@ -388,6 +457,11 @@ class _Components(logging.Handler):
             except OSError:
                 errors += 1
         self._files.clear()
+        if self._diagnostic_files or self._diagnostic_rejected:
+            try:
+                self._report_diagnostics()
+            except OSError:
+                errors += 1
         if dropped or errors:
             self._report(dropped, errors)
 
@@ -453,7 +527,7 @@ def capture(module, *, ros=False, base=None, metadata=None, evidence=None):
         logger = logging.getLogger("dimos")
         logger.addHandler(handler)
         resources.callback(logger.removeHandler, handler)
-        for name in ("dimos.plugins", "dimos.path_tracker"):
+        for name in _TASK_LOG_NAMESPACES:
             component_logger = logging.getLogger(name)
             resources.callback(component_logger.setLevel, component_logger.level)
             if component_logger.getEffectiveLevel() > logging.INFO:

@@ -57,8 +57,12 @@ def main(argv=None):
             return 0
         if argv is None:
             from dimos.plugins.runtime_log import capture
+            from dimos.plugins.runtime_log._redaction import redact_config
 
-            stack.enter_context(capture("path_tracker", ros=True))
+            stack.enter_context(capture("path_tracker", ros=True, metadata=lambda: {
+                "config_path": str(args.config),
+                "effective_config": redact_config(cfg),
+            }))
         logging.basicConfig(
             level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
         )

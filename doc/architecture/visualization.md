@@ -19,3 +19,13 @@ bash sh/run_rviz.sh --time-source sim
 ```
 
 退出只清理本次可视化创建的辅助进程与 RViz，不停止数据源、压缩器、推理或服务端，不 reset 模型，不发送运动指令。数据录制与 RViz 独立；不因开启显示就追加录制话题。
+
+## 自由探索记忆视图
+
+在项目根目录从独立终端启动 `bash sh/run_rviz_mem.sh`。可加 `--time-source wall` 或 `--time-source sim` 显式选择时钟，`--dry-run` 只打印命令。使用与 VLN 相同的 ROS domain 和时钟，Fixed Frame 按实际里程计坐标系设置，默认 `world`。
+
+- `/vln/exploration/map` 显示上层选点使用的占据图。
+- `/vln/exploration/markers` 显示当前位姿、已检测朝向、选中前沿、短程航点和冷却中的前沿。搜索结束或取消后清除叠加层。
+- XNavDP 的原生路径、结果标记、RGB 和深度点云仍可在此视图查看。
+
+探索数据由 `bash sh/start_vln_motion.sh --exploration-memory` 的找物任务发布。运行入口与日志对照见 [自由探索测试](../skills/vln-operations/SKILL.md#自由探索测试)。

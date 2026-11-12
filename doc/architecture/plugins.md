@@ -21,7 +21,7 @@ XNavDP 当前用独立 `bash sh/start_xnavdp.sh` 入口。基座不再提供 alg
 
 ## VLN Task 上层归属
 
-`dimos/vln_task/` 是独立上层入口，组织 LLM 工具、当前帧感知、主动搜索、目标刷新和持续接近。基础客户端、Web transport 和 tracker 算法不得反向依赖该目录；既有 `plugins/_agent_cli.py`、旧 `plugins/vln_task/`、`plugins/active_search/` 与 `web_input/app.py` 是兼容入口，可转调同一上层实现。
+`dimos/vln_task/` 是独立上层入口，组织 LLM 工具、当前帧感知、主动搜索、目标刷新和持续接近。基础客户端、Web transport 和 tracker 算法不得反向依赖该目录；既有 `plugins/_agent_cli.py`、`plugins/active_search/` 与 `web_input/app.py` 是兼容入口，可转调同一上层实现。
 
 `web_input/transport.py` 只管理 HTTP、任务队列、状态传输和取消，通过回调注入初始化及展示策略。模型预热和导航状态解释归 `vln_task/web.py`。LLM/VLM 的提示词、历史和调用顺序由任务层提供。控制、碰撞检查、过期停车及通用停止条件留在 tracker。
 

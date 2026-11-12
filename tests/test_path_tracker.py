@@ -364,7 +364,7 @@ def test_sweep_turn_uses_angular_velocity_and_stops(obstacle):
             assert v == 0
             assert w > 0
             assert reason == "exploration_turn"
-            tracker.update_odom((0., 0., math.radians(-130)), "world")
+            tracker.update_odom((0., 0., math.radians(-136)), "world")
         worker.join(timeout=1)
         assert finished == [None]
     assert commands[-1][:2] == (0., 0.)

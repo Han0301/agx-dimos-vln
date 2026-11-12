@@ -28,12 +28,15 @@ def test_search_plans_at_first_localized_view(expected_frame):
 
 
 @pytest.mark.parametrize("mode", ["single", "multi_view"])
-def test_old_verification_mode_is_ignored(tmp_path, mode):
+def test_retired_search_settings_are_ignored(tmp_path, mode):
     import yaml
 
     path = tmp_path / "active_search.yaml"
     settings = load_config()
-    path.write_text(yaml.safe_dump({**settings, "verification_mode": mode, "max_attempts": 5}))
+    path.write_text(yaml.safe_dump({
+        **settings, "verification_mode": mode, "max_attempts": 5, "max_target_shift_m": 0.55,
+    }))
+    assert "max_target_shift_m" not in settings
     assert load_config(path) == settings
 
 

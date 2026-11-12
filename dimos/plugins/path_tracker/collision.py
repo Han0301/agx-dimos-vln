@@ -37,13 +37,15 @@ class XNavDPCollisionGuard:
         self._latest_costmap: OccupancyGrid | None = None
 
     def _depth_forward_cost(
-        self, depth_image: np.ndarray, waypoints_base: np.ndarray
+        self, depth_image: np.ndarray, waypoints_base: np.ndarray, *, details: dict | None = None,
     ) -> tuple[float, bool]:
         if waypoints_base.size == 0:
             return 0.0, False
         h, w = depth_image.shape[:2]
-        centre = depth_image[int(h * 0.2) : int(h * 0.8), int(w * 0.3) : int(w * 0.7)]
-        valid = centre[(centre > 0.05) & np.isfinite(centre)]
+        y0, y1, x0, x1 = int(h * 0.2), int(h * 0.8), int(w * 0.3), int(w * 0.7)
+        centre = depth_image[y0:y1, x0:x1]
+        valid_mask = (centre > 0.05) & np.isfinite(centre)
+        valid = centre[valid_mask]
         if len(valid) == 0:
             return 0.0, False
         min_depth = float(valid.min())
@@ -53,10 +55,17 @@ class XNavDPCollisionGuard:
         forward_fraction = min(endpoint[0] / self.horizon_m, 1.0)
         if min_depth < self.depth_obstacle_m:
             severity = 1.0 - min_depth / self.depth_obstacle_m
-            return (
-                severity * forward_fraction * self.collision_penalty,
-                severity > 0.5 and (self.depth_hard_stop or forward_fraction > 0.2),
-            )
+            blocked = severity > 0.5 and (self.depth_hard_stop or forward_fraction > 0.2)
+            if blocked and details is not None:
+                index = np.flatnonzero(valid_mask)[valid.argmin()]
+                py, px = divmod(int(index), centre.shape[1])
+                details.update(
+                    blocking_pixel_xy=(x0 + px, y0 + py), roi_xyxy=(x0, y0, x1, y1),
+                    min_depth_m=min_depth, hard_stop_below_m=self.depth_obstacle_m / 2,
+                    min_valid_depth_m=0.05, forward_fraction=forward_fraction,
+                    depth_hard_stop=self.depth_hard_stop,
+                )
+            return severity * forward_fraction * self.collision_penalty, blocked
         severity = 1.0 - (min_depth - self.depth_obstacle_m) / self.depth_obstacle_m
         return severity * forward_fraction * self.collision_penalty * 0.4, False
 
@@ -68,6 +77,8 @@ class XNavDPCollisionGuard:
         heading: float,
         half_length: float,
         half_width: float,
+        *,
+        details: dict | None = None,
     ) -> int:
         cos_h, sin_h = math.cos(heading), math.sin(heading)
         corners = [
@@ -98,12 +109,10 @@ class XNavDPCollisionGuard:
                 ly = -sin_h * dx + cos_h * dy
                 if abs(lx) <= half_length and abs(ly) <= half_width:
                     cost = int(costmap.grid[gy, gx])
-                    if cost != CostValues.UNKNOWN:
-                        max_cost = (
-                            cost
-                            if max_cost == CostValues.UNKNOWN
-                            else max(max_cost, cost)
-                        )
+                    if cost != CostValues.UNKNOWN and (max_cost == CostValues.UNKNOWN or cost > max_cost):
+                        max_cost = cost
+                        if details is not None and cost >= self.cost_threshold:
+                            details.update(blocking_cell_xy=(gx, gy), blocking_cost=cost)
         return max_cost
 
 
@@ -116,6 +125,8 @@ def collision_veto(
     v: float,
     w: float,
     horizon_s: float = 0.8,
+    *,
+    details: dict | None = None,
 ) -> str | None:
     if not math.isfinite(v) or not math.isfinite(w):
         return "invalid_command"
@@ -141,19 +152,31 @@ def collision_veto(
         high_y = low_y + costmap.height * costmap.resolution
         half_length = guard.robot_length / 2.0
         half_width = guard.robot_half_width
-        for px, py, heading in poses:
+        for step, (px, py, heading) in enumerate(poses):
             c, s = math.cos(heading), math.sin(heading)
             for lx in (-half_length, half_length):
                 for ly in (-half_width, half_width):
                     wx, wy = px + c * lx - s * ly, py + s * lx + c * ly
                     if not (low_x <= wx < high_x and low_y <= wy < high_y):
+                        if details is not None:
+                            details.update(
+                                sweep_step=step, sweep_pose=(px, py, heading),
+                                blocking_corner_xy=(wx, wy), map_bounds_xyxy=(low_x, low_y, high_x, high_y),
+                                footprint_half_extents_m=(half_length, half_width),
+                            )
                         return "map_bounds"
             if (
                 guard._max_cost_in_obb(
-                    costmap, px, py, heading, half_length, half_width
+                    costmap, px, py, heading, half_length, half_width, details=details,
                 )
                 >= guard.cost_threshold
             ):
+                if details is not None:
+                    details.update(
+                        sweep_step=step, sweep_pose=(px, py, heading),
+                        cost_threshold=guard.cost_threshold, map_resolution_m=costmap.resolution,
+                        map_origin_xy=(low_x, low_y), footprint_half_extents_m=(half_length, half_width),
+                    )
                 return "map"
     elif scan is not None and len(scan):
         ox, oy, oyaw = odom
@@ -166,14 +189,19 @@ def collision_veto(
                 + c * (np.array([p[1] for p in poses]) - oy),
             )
         )
-        for px, py in local:
-            if np.any(
-                np.sum((scan[:, :2] - np.array([px, py])) ** 2, axis=1)
-                < guard.robot_radius**2
-            ):
+        for step, (px, py) in enumerate(local):
+            near = np.sum((scan[:, :2] - np.array([px, py])) ** 2, axis=1) < guard.robot_radius**2
+            if np.any(near):
+                if details is not None:
+                    index = int(near.argmax())
+                    details.update(
+                        sweep_step=step, sweep_pose=poses[step], footprint_centre_base_xy=(float(px), float(py)),
+                        blocking_lidar_index=index, blocking_lidar_base_xy=scan[index, :2].tolist(),
+                        footprint_radius_m=guard.robot_radius,
+                    )
                 return "lidar"
     if v > 0 and guard.depth_obstacle_m > 0:
         short_path = np.array([[0.0, 0.0], [v * horizon_s, 0.0]])
-        if guard._depth_forward_cost(depth, short_path)[1]:
+        if guard._depth_forward_cost(depth, short_path, details=details)[1]:
             return "depth"
     return None

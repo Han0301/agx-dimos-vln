@@ -2,6 +2,8 @@
 
 import hashlib
 import json
+import os
+
 
 def run_profile(name, args, parser, stack=None):
     from dimos.vln_task.profile import load_profile
@@ -14,8 +16,12 @@ def run_profile(name, args, parser, stack=None):
         motion_tracker = load_tracker(args.motion_tracker_config)
         if motion_tracker["output_only"]:
             raise ValueError("--motion-tracker-config requires output_only: false")
+    exploration_memory = os.environ.get("DIMOS_VLN_EXPLORATION_MEMORY") == "1"
+    if exploration_memory and (motion_tracker is None or profile.get("active_search") is None):
+        raise ValueError("--exploration-memory requires a motion tracker and active search")
     if args.check:
-        print(json.dumps(profile, ensure_ascii=False, indent=2))
+        effective_profile = {**profile, "exploration_memory": True} if exploration_memory else profile
+        print(json.dumps(effective_profile, ensure_ascii=False, indent=2))
         if motion_tracker is not None:
             print(json.dumps(motion_tracker, ensure_ascii=False, indent=2))
         return 0
@@ -24,21 +30,28 @@ def run_profile(name, args, parser, stack=None):
     if stack is not None:
         from dimos.plugins.runtime_log import capture
 
-        effective_config = json.dumps(
-            {"profile": profile, "motion_tracker": motion_tracker},
-            sort_keys=True,
-        ).encode()
-        stack.enter_context(capture(
-            name, ros=True,
-            metadata={
+        def metadata():
+            from dimos.core.config import ROOT
+
+            from .diagnostic_metadata import diagnostics_metadata
+
+            effective = {
+                "profile": profile, "motion_tracker": motion_tracker,
+                "exploration_memory": exploration_memory,
+            }
+            encoded = json.dumps(effective, sort_keys=True).encode()
+            return {
                 "profile": str(args.profile),
                 "profile_version": profile["version"],
-                "effective_config_sha256": hashlib.sha256(effective_config).hexdigest(),
+                "effective_config_sha256": hashlib.sha256(encoded).hexdigest(),
                 "motion_tracker_config": str(args.motion_tracker_config) if motion_tracker else None,
                 "output_only": motion_tracker is None,
                 "locate_only": args.locate_only,
-            },
-        ))
+                "exploration_memory": exploration_memory,
+                **diagnostics_metadata(ROOT, effective),
+            }
+
+        stack.enter_context(capture(name, ros=True, metadata=metadata))
 
     from functools import partial
 
@@ -47,6 +60,8 @@ def run_profile(name, args, parser, stack=None):
     runner = partial(create_runner, profile, locate_only=args.locate_only)
     if motion_tracker is not None:
         runner = partial(runner, motion_tracker=motion_tracker)
+    if exploration_memory:
+        runner = partial(runner, exploration_memory=True)
     if name == "web_input":
         import uvicorn
 

@@ -12,7 +12,10 @@ from datetime import datetime
 from pathlib import Path
 from tempfile import mkdtemp
 
-from . import LOCAL_TIME, SCHEMA_VERSION, SPOOL_ROOT, environment_metadata, get_start_ticks, log_root
+from . import (
+    DEFAULT_EVIDENCE, LOCAL_TIME, SCHEMA_VERSION, SPOOL_ROOT,
+    environment_metadata, get_start_ticks, log_root,
+)
 
 POLL_INTERVAL = 0.25
 LIVE_COMPONENTS = {
@@ -198,7 +201,7 @@ class _Collector:
                 )
 
 
-def record(base=None, *, spool_root=None, mode=None, evidence="off"):
+def record(base=None, *, spool_root=None, mode=None, evidence=DEFAULT_EVIDENCE):
     """Record until interrupted, without sending signals to producer modules."""
     base = log_root(base)
     base.mkdir(parents=True, exist_ok=True)

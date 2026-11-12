@@ -8,7 +8,7 @@ from dimos.plugins._agent_common import load_config
 from dimos.plugins.llm.client import LLMClient
 from dimos.plugins.runtime_log import capture
 from dimos.plugins.vlm.client import VLMClient
-from dimos.plugins.vln_task.agent import TaskAgent
+from dimos.vln_task.agent import TaskAgent
 from dimos.plugins.web_input.app import create_app
 
 
@@ -246,3 +246,22 @@ def test_cancelled_search_ignores_late_progress():
             assert task["result"] is None
         finally:
             release.set()
+
+
+def test_web_task_failure_logs_redacted_error_and_stack(tmp_path):
+    class Runner:
+        def run(self, goal, image=None, cancel=None):
+            raise ValueError("plan input is invalid token=log-test-secret")
+
+    with capture("web_input", base=tmp_path) as run:
+        with TestClient(create_app(load_config("web_input"), Runner)) as web:
+            task_id = web.post("/tasks", json={"goal": "diagnostic"}).json()["task_id"]
+            assert web.get(f"/tasks/{task_id}", params={"wait_s": 2}).json()["status"] == "failed"
+
+    contents = (run / "modules/web_input.jsonl").read_text()
+    records = [json.loads(line) for line in contents.splitlines()]
+    failure = next(record for record in records if record.get("event") == "task_failed")
+    assert failure["task_id"] == task_id
+    assert "plan input is invalid" in failure["error_message"]
+    assert "log-test-secret" not in contents
+    assert failure["traceback"][-1]["function"] == "run"

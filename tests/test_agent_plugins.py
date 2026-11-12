@@ -15,7 +15,7 @@ def components():
     try:
         from dimos.plugins.llm.client import LLMClient
         from dimos.plugins.vlm.client import VLMClient
-        from dimos.plugins.vln_task.agent import TaskAgent, TaskCancelled
+        from dimos.vln_task.agent import TaskAgent, TaskCancelled
         from dimos.plugins.web_input.app import create_app
 
         return VLMClient, LLMClient, TaskAgent, TaskCancelled, create_app
@@ -491,3 +491,70 @@ def test_simple_web_camera_routes_show_placeholders_without_sources():
         for route in ("/camera_feed", "/realsense_feed", "/depth_feed", "/frontier_feed"):
             assert f'src="{route}"' in page.text
             assert web.get(route).status_code == 404
+
+
+def test_vlm_logs_exact_http_input_after_jpeg_conversion_even_on_failure(tmp_path):
+    from dimos.plugins.runtime_log import capture, task_context
+
+    VLMClient, *_ = components()
+    source = io.BytesIO()
+    Image.new("RGB", (32, 24), "green").save(source, "PNG")
+    sent = []
+
+    def remote(request):
+        sent.append(base64.b64decode(json.loads(request.content)["image_base64"]))
+        return httpx.Response(503, text="provider unavailable")
+
+    with capture("web_input", base=tmp_path) as run, task_context("test-task"):
+        with httpx.Client(transport=httpx.MockTransport(remote)) as http:
+            with VLMClient(settings("vlm"), http) as client:
+                with pytest.raises(httpx.HTTPStatusError):
+                    client.query(source.getvalue(), "describe", source="explicit_image")
+
+    records = [json.loads(line) for line in (run / "modules/vlm.jsonl").read_text().splitlines()]
+    call = next(row for row in records if row.get("event") == "vlm_call_finished")
+    assert call["status"] == "failed"
+    assert call["task_id"] == "test-task"
+    assert call["input_image_archive_status"] == "queued"
+    assert call["call_id"] in call["input_image_artifact"]
+    assert sent[0].startswith(b"\xff\xd8")
+    assert (run / call["input_image_artifact"]).read_bytes() == sent[0]
+
+
+@pytest.mark.parametrize("first_arguments", ['{"target":"black water dispenser"}', {"goal": "black water dispenser"}])
+def test_reference_search_recovers_navigation_tool_arguments(jpeg, first_arguments):
+    from types import SimpleNamespace
+
+    _, _, TaskAgent, _, _ = components()
+    searches = []
+    uploads = []
+
+    def chat(messages, *, tools, timeout):
+        if messages[-1]["role"] == "tool":
+            return {"message": {"role": "assistant", "content": "Found"}}
+        arguments = first_arguments if len(messages) == 2 else {"target": "black water dispenser"}
+        return {"message": {"role": "assistant", "content": "", "tool_calls": [
+            {"function": {"name": "find_object", "arguments": arguments}},
+        ]}}
+
+    def query(image, prompt, **kwargs):
+        uploads.append(image)
+        return {"text": "Glossy black cabinet"}
+
+    def find(target, *args, **kwargs):
+        assert kwargs["stop_m"] == 1.0
+        searches.append(target)
+        return {"status": "localized"}
+
+    agent = TaskAgent(
+        SimpleNamespace(chat=chat, config={"timeout_s": 5}),
+        SimpleNamespace(query=query, config={"timeout_s": 5}),
+        {"timeout_s": 10, "max_steps": 4},
+        find_object=find,
+    )
+    result = agent.run_with_reference(
+        "find a black water dispenser and walk up to it until you are about 1.0 meters away", jpeg,
+    )
+    assert result["navigation"]["status"] == "localized"
+    assert uploads == [jpeg]
+    assert len(searches) == 1 and searches[0].startswith("black water dispenser")

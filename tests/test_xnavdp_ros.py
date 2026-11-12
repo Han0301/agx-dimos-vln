@@ -199,8 +199,8 @@ def test_native_request_and_result_roundtrip(server):
 
 
 def test_preview_runner_discovers_planning_endpoints_before_any_request(server):
-    from dimos.plugins.vln_task.assembly import create_runner
-    from dimos.plugins.vln_task.profile import load_profile
+    from dimos.vln_task.assembly import create_runner
+    from dimos.vln_task.profile import load_profile
 
     profile = load_profile("config/profiles/vln_preview.yaml")
     node, state = server

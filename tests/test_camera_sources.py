@@ -357,5 +357,6 @@ def test_high_frequency_entries():
         "play_bag.sh",
         "record_bag.sh",
         "run_rviz.sh",
+        "run_rviz_mem.sh",
     }
     assert not (ROOT / "sh/start_camera.sh").exists()

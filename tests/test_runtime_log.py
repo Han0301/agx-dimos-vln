@@ -16,7 +16,7 @@ def test_runtime_log_captures_streams_and_only_used_components(
     with capture("web_input", ros=True, base=tmp_path) as run:
         assert Path(os.environ["ROS_LOG_DIR"]) == run / "ros"
         print("result")
-        logging.getLogger("dimos.plugins.vln_task.agent").warning("waiting")
+        logging.getLogger("dimos.vln_task.agent").warning("waiting")
         with task_context("task-1"):
             logging.getLogger("dimos.plugins.llm.client").info("done elapsed_ms=3")
         print("error", file=sys.stderr)

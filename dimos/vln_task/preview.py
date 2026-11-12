@@ -13,12 +13,12 @@ from .perception import (
     detection_prompt, optical_ray, parse_detection, target_and_goal,
 )
 
-logger = logging.getLogger("dimos.plugins.vln_task.preview")
+logger = logging.getLogger("dimos.vln_task.preview")
 
 
 class NavigationPreview(ObjectPerception):
-    def __init__(self, vlm, snapshot, plan, preview, camera, stop_m, *, verify=None):
-        super().__init__(vlm, camera, stop_m, verify=verify)
+    def __init__(self, vlm, snapshot, plan, preview, camera, stop_m):
+        super().__init__(vlm, camera, stop_m)
         self.snapshot = snapshot
         self.plan = plan
         self.preview = preview

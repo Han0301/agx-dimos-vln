@@ -2,11 +2,13 @@ import io
 import json
 import logging
 import math
+from contextlib import nullcontext
 from uuid import uuid4
 
+from httpx import HTTPError
 from PIL import Image, ImageDraw
 
-from dimos.plugins.runtime_log import artifact, event, event_context, recording_enabled
+from dimos.plugins.runtime_log import artifact, diagnostic_artifact, event, event_context, recording_enabled
 
 logger = logging.getLogger('dimos.plugins.active_search.verification')
 
@@ -62,6 +64,9 @@ def verification_prompt(target, *, include_context=False):
     subject = "the object inside the magenta box" if include_context else "the object in the crop"
     return (
         f"Does {subject} match {json.dumps(target, ensure_ascii=False)}? "
+        'Answer "yes" only when visible evidence supports the category and every requested attribute. '
+        'Check any requested color on the object itself. Use context to check requested spatial relationships. '
+        'If the category or a required attribute is unclear or conflicts with the target, answer "no". '
         'Return only {"match":"yes"} or {"match":"no"}.'
     )
 
@@ -70,37 +75,63 @@ def verify_candidate(vlm, frame, target, box, remaining, *, include_context=Fals
     source = "d455_search_context" if include_context else "d455_search_verification"
     image = verification_image(frame.jpeg, box, include_context=include_context)
     verification_id = uuid4().hex if recording_enabled() else None
-    with event_context(purpose="visual_verification", verification_id=verification_id):
-        result = vlm.query(
-            image, verification_prompt(target, include_context=include_context),
-            source=source, stamp_ns=frame.stamp_ns,
-            timeout=min(remaining(), vlm.config["timeout_s"]),
-        )
+    fields = {
+        "verification_id": verification_id, "source": source,
+        "observation_id": getattr(frame, "observation_id", None),
+        "rgb_stamp_ns": frame.stamp_ns, "bbox_2d": box, "target": target,
+    } if verification_id is not None else {}
+    crop_path = None
+    diagnostics = (
+        event_context(purpose="visual_verification", verification_id=verification_id)
+        if verification_id is not None else nullcontext()
+    )
+    with diagnostics:
+        timeout = min(remaining(), vlm.config["timeout_s"])
+        if verification_id is not None:
+            crop_path = diagnostic_artifact(
+                f"verify-{verification_id}-crop.jpg", image, kind="vlm_verification_crop", **fields,
+            )
+        try:
+            result = vlm.query(
+                image, verification_prompt(target, include_context=include_context),
+                source=source, stamp_ns=frame.stamp_ns, timeout=timeout,
+            )
+        except (HTTPError, ValueError, RuntimeError, TimeoutError) as exc:
+            if verification_id is not None:
+                path = crop_path or artifact(
+                    f"verify-{verification_id}.jpg", image, reason="provider_failure", **fields,
+                )
+                event(logger, "visual_verification_result", **fields, verdict="provider_failure",
+                      error_type=type(exc).__name__, crop_artifact=path)
+            raise
     text = result["text"].strip()
     if text.startswith("```") and text.endswith("```"):
         text = text.partition("\n")[2][:-3].strip()
     try:
-        fields = json.loads(text, object_pairs_hook=list)
+        response_fields = json.loads(text, object_pairs_hook=list)
     except ValueError:
-        fields = None
+        response_fields = None
     verdict = "invalid_verification"
-    if fields == [("match", "yes")]:
+    if response_fields == [("match", "yes")]:
         verdict = "match"
-    elif fields == [("match", "no")]:
+    elif response_fields == [("match", "no")]:
         verdict = "mismatch"
     if verification_id is not None:
+        raw = result["text"][:16384]
+        truncated = len(raw) < len(result["text"])
+        response_path = diagnostic_artifact(
+            f"verify-{verification_id}-response.txt", raw, kind="vlm_verification_response",
+            truncated=truncated, verdict=verdict, **fields,
+        )
         evidence = {}
         if verdict != "match":
-            evidence["crop_artifact"] = artifact(
-                f"verify-{verification_id}.jpg", image, verification_id=verification_id,
-                rgb_stamp_ns=frame.stamp_ns, reason=verdict,
+            evidence["crop_artifact"] = crop_path or artifact(
+                f"verify-{verification_id}.jpg", image, reason=verdict, **fields,
             )
-            evidence["response_artifact"] = artifact(
-                f"verify-{verification_id}.txt", result["text"][:16384],
-                verification_id=verification_id, rgb_stamp_ns=frame.stamp_ns, reason=verdict,
-                truncated=len(result["text"]) > 16384,
+            evidence["response_artifact"] = response_path or artifact(
+                f"verify-{verification_id}.txt", raw, reason=verdict, truncated=truncated, **fields,
             )
-        event(logger, "visual_verification_result", verification_id=verification_id,
-              source=source, rgb_stamp_ns=frame.stamp_ns, bbox_2d=box,
-              verdict=verdict, elapsed_ms=result["elapsed_ms"], **evidence)
+        event(logger, "visual_verification_result", **fields, verdict=verdict,
+              elapsed_ms=result["elapsed_ms"], crop_diagnostic_artifact=crop_path,
+              vlm_response_artifact=response_path, vlm_response_truncated=truncated, **evidence)
     return verdict, result["elapsed_ms"]

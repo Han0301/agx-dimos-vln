@@ -63,7 +63,7 @@ def test_task_console_shows_events_and_hides_successful_status_polls(capsys):
 
     from dimos.plugins.runtime_log import task_console, task_context
 
-    agent = logging.getLogger("dimos.plugins.vln_task.agent")
+    agent = logging.getLogger("dimos.vln_task.agent")
     tracker = logging.getLogger("dimos.path_tracker")
     access = logging.getLogger("uvicorn.access")
     previous_level = access.level

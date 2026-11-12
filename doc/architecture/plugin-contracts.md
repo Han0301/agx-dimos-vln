@@ -9,7 +9,7 @@
 | LLM | 文本、显式历史、推理参数 → Ollama 助手消息与推理指标 | 工具由任务层执行；由 VLN Task 的 Web 适配在启动时预热 |
 | Web 输入 | 文本、可选图像 → 任务 ID、状态与结果 | 单 worker、有界队列和取消 |
 | VLN Task 上层 Agent | 用户任务、观测、工具结果 → 回复、目标或路径预览 | 管理每任务历史、工具调用和期限；设备 SDK 由基座持有 |
-| VLN Task 搜索工作流 | 未见目标、RGB-D/odom → 探索进度与经复核的候选 | 首帧由 VLN task 的 VLM 分支检查。实机探索点走现有 XNavDP，回放使用录制视角 |
+| VLN Task 搜索工作流 | 未见目标、RGB-D/odom → 探索进度与候选框 | 首帧由 VLN task 的 VLM 分支检查。实机探索点走现有 XNavDP，回放使用录制视角 |
 | Path tracker | result、odom、原始深度、可选障碍输入 → 速度 | 默认仅终端预览；显式配置后只发布原 /cmd_vel；不取得 Go2 连接所有权 |
 | 运行日志 | 已登记进程的终端、ROS 日志及结构化事件 → 按会话归档 | 独立启停，通过 `task_id` 和 `request_stamp_ns` 查调用链 |
 

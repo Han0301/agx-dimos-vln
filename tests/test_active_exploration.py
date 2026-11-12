@@ -89,14 +89,19 @@ def test_first_view_hit_plans_without_exploration():
     assert "exploring" not in stages
 
 
-def test_motion_search_does_not_explore_after_invalid_detection():
-    failure = "invalid_detection"
-    result, visited, stages = search_views([failure, "localized"])
+def test_motion_search_continues_after_invalid_detection():
+    result, visited, stages = search_views(
+        ["not_visible", "invalid_detection", "localized"]
+    )
 
-    assert result["status"] == failure
-    assert result["search"]["reason"] == failure
-    assert visited == [("observe", 1), ("detect", 1)]
-    assert stages[-1] == failure
+    assert result["status"] == "preview_ready"
+    assert result["search"]["attempts"][1]["status"] == "invalid_detection"
+    assert visited == [
+        ("observe", 1), ("detect", 1),
+        ("explore", 2), ("stop", 2), ("detect", 2),
+        ("explore", 3), ("stop", 3), ("detect", 3), ("plan", 3),
+    ]
+    assert stages[-1] == "confirmed"
 
 
 def test_unconfirmed_candidate_continues_frontier_search():

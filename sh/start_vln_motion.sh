@@ -5,6 +5,7 @@ cd "$root"
 
 config=config/profiles/vln_motion.yaml
 check=false
+exploration_memory=1
 while (($#)); do
   case "$1" in
     --config)
@@ -13,8 +14,9 @@ while (($#)); do
       shift
       ;;
     --check) check=true ;;
+    --exploration-memory) exploration_memory=1 ;;
     -h|--help)
-      echo 'Usage: bash sh/start_vln_motion.sh [--config FILE] [--check]'
+      echo 'Usage: bash sh/start_vln_motion.sh [--config FILE] [--exploration-memory] [--check]'
       exit 0
       ;;
     *) echo "Unknown argument: $1" >&2; exit 2 ;;
@@ -45,6 +47,7 @@ PY
 mapfile -t paths <<< "$refs"
 web=(bash sh/start_web_input.sh --profile "${paths[0]}" --motion-tracker-config "${paths[1]}")
 
+export DIMOS_VLN_EXPLORATION_MEMORY="$exploration_memory"
 if "$check"; then
   exec "${web[@]}" --check
 fi

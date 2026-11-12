@@ -11,7 +11,7 @@ import os
 import threading
 import time
 
-from dimos.plugins.runtime_log import event
+from dimos.plugins.runtime_log import diagnostic_artifact, event, recording_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +21,8 @@ EXPECTED_RELEASE = "unified-20261104"
 RGB_TOPIC = "/camera/camera/color/image_raw/compressed"
 ODOM_TOPIC = "/odom"
 GOAL_TOPIC = "/xnavdp/point_goal"
+_INLINE_REPLAY_BYTES = 64 * 1024
+_MAX_NATIVE_REPLAY_POINTS = 4096
 
 
 def stamp_ns(header):
@@ -134,6 +136,52 @@ def validate_result(parts, goal):
     return result
 
 
+def _record_trajectory(parts, result, request):
+    path = parts["path"]
+    if len(path.poses) > _MAX_NATIVE_REPLAY_POINTS:
+        artifact = diagnostic_artifact(
+            f"xnavdp-{request}.json", parts["result"].data, request_stamp_ns=request,
+        )
+        event(
+            logger, "xnavdp_trajectory", request_stamp_ns=request, artifact_path=artifact,
+            native_path_omitted="point_limit",
+        )
+        return
+
+    poses = []
+    for item in path.poses:
+        p = item.pose.position
+        q = getattr(item.pose, "orientation", None)
+        orientation = [q.x, q.y, q.z, q.w] if q is not None else None
+        poses.append({
+            "position_xyz": [p.x, p.y, p.z],
+            "orientation_xyzw": (
+                [value if math.isfinite(value) else None for value in orientation]
+                if orientation is not None else None
+            ),
+        })
+    replay = {
+        "native_path": {
+            "frame_id": path.header.frame_id, "stamp_ns": stamp_ns(path.header), "poses": poses,
+        },
+        "result": {name: result[name] for name in (
+            "request_stamp_ns", "trajectory", "all_trajectory", "all_values", "trajectory_frame",
+            "goal_frame", "world_frame", "robot_pos", "robot_quat", "goal",
+        )},
+    }
+    if len(parts["result"].data) <= _INLINE_REPLAY_BYTES and len(poses) <= 512:
+        event(logger, "xnavdp_trajectory", request_stamp_ns=request, **replay)
+    else:
+        artifact = diagnostic_artifact(
+            f"xnavdp-{request}.json", json.dumps(replay, separators=(",", ":")),
+            request_stamp_ns=request,
+        )
+        event(
+            logger, "xnavdp_trajectory", request_stamp_ns=request, artifact_path=artifact,
+            artifact_outcome="queued" if artifact else "unavailable",
+        )
+
+
 class XNavDPBusy(RuntimeError):
     pass
 
@@ -155,8 +203,8 @@ class XNavDPClient:
         self.event = threading.Event()
         self.pending = None
         self.parts = {}
-        self.part_arrivals = {}
-        self.rejected_parts = {"wrong_stamp": 0, "malformed_result": 0}
+        self.part_arrivals = None
+        self.rejected_parts = None
         self.error = None
         self.latest_rgb = self.latest_odom = None
         self.subscriptions = None
@@ -217,10 +265,12 @@ class XNavDPClient:
             if self.pending is None:
                 return
             if stamp_ns(header) != self.pending:
-                self.rejected_parts["wrong_stamp"] += 1
+                if self.rejected_parts is not None:
+                    self.rejected_parts["wrong_stamp"] += 1
                 return
             self.parts[key] = msg
-            self.part_arrivals.setdefault(key, time.monotonic())
+            if self.part_arrivals is not None:
+                self.part_arrivals.setdefault(key, time.monotonic())
             if all(k in self.parts for k in ("path", "result")):
                 self.event.set()
 
@@ -236,12 +286,15 @@ class XNavDPClient:
                 not isinstance(result, dict)
                 or type(result.get("request_stamp_ns")) is not int
             ):
-                self.rejected_parts["malformed_result"] += 1
+                if self.rejected_parts is not None:
+                    self.rejected_parts["malformed_result"] += 1
                 return
             if result["request_stamp_ns"] != self.pending:
-                self.rejected_parts["wrong_stamp"] += 1
+                if self.rejected_parts is not None:
+                    self.rejected_parts["wrong_stamp"] += 1
                 return
-            self.part_arrivals.setdefault("result", time.monotonic())
+            if self.part_arrivals is not None:
+                self.part_arrivals.setdefault("result", time.monotonic())
             if result.get("status") != "success":
                 self.error = str(result.get("error", "inference failed"))
                 self.event.set()
@@ -422,16 +475,20 @@ class XNavDPClient:
         """Return the original Path and JSON String messages."""
         with self.request_lock:
             request = stamp_ns(goal.header)
-            position = goal.pose.position
-            fields = {
-                "request_stamp_ns": request,
-                "goal_xy": [position.x, position.y],
-                "world_frame": goal.header.frame_id,
-            }
-            event(logger, "xnavdp_request_started", **fields)
-            started = phase_at = time.monotonic()
+            recording = recording_enabled()
+            if recording:
+                position = goal.pose.position
+                fields = {
+                    "request_stamp_ns": request,
+                    "goal_xy": [position.x, position.y],
+                    "world_frame": goal.header.frame_id,
+                }
+                event(logger, "xnavdp_request_started", **fields)
+            timings = timing_ms
+            if recording and timings is None:
+                timings = {}
+            started = phase_at = time.monotonic() if timings is not None else None
             stage = "discovery"
-            timings = timing_ms if timing_ms is not None else {}
             opened = False
             sent_at = None
             try:
@@ -439,21 +496,29 @@ class XNavDPClient:
                 if check is not None:
                     check()
                 self.open_requests(check=check)
-                prepared = time.monotonic()
-                timings["xnavdp_discovery"] = (prepared - phase_at) * 1000
-                stage, phase_at = "health", prepared
+                if timings is not None:
+                    prepared = time.monotonic()
+                    timings["xnavdp_discovery"] = (prepared - phase_at) * 1000
+                    phase_at = prepared
+                stage = "health"
                 # Refresh readiness for each request; never reset here.
-                self.prepare(False, check=check)
-                timings["xnavdp_health"] = (time.monotonic() - phase_at) * 1000
-                stage, phase_at = "publish", time.monotonic()
+                health = self.prepare(False, check=check)
+                if recording and isinstance(health, dict):
+                    fields["server_release"] = health.get("release")
+                    fields["server_transport"] = health.get("transport")
+                if timings is not None:
+                    health_at = time.monotonic()
+                    timings["xnavdp_health"] = (health_at - phase_at) * 1000
+                    phase_at = health_at
+                stage = "publish"
                 if check is not None:
                     check()
                 if request == self.last_request_stamp:
                     raise ValueError("RGB timestamp already used")
                 with self.lock:
                     self.pending, self.parts, self.error = request, {}, None
-                    self.part_arrivals = {}
-                    self.rejected_parts = {"wrong_stamp": 0, "malformed_result": 0}
+                    self.part_arrivals = {} if recording else None
+                    self.rejected_parts = {"wrong_stamp": 0, "malformed_result": 0} if recording else None
                     self.last_request_stamp = request
                     self.event.clear()
                     opened = True
@@ -485,11 +550,14 @@ class XNavDPClient:
                         )
                         raise XNavDPInferenceError(self.error)
                     parts = dict(self.parts)
-                received = time.monotonic()
-                timings["xnavdp_response"] = (received - sent_at) * 1000
-                stage, phase_at = "validation", received
+                if timings is not None:
+                    received = time.monotonic()
+                    timings["xnavdp_response"] = (received - sent_at) * 1000
+                    phase_at = received
+                stage = "validation"
                 result = validate_result(parts, goal)
-                timings["xnavdp_validation"] = (time.monotonic() - received) * 1000
+                if timings is not None:
+                    timings["xnavdp_validation"] = (time.monotonic() - received) * 1000
                 if check is not None:
                     check()
                 elapsed_s = time.monotonic() - sent_at
@@ -498,38 +566,43 @@ class XNavDPClient:
                     "request completed stamp_ns=%d path_points=%d elapsed_ms=%.1f",
                     request, path_points, elapsed_s * 1000,
                 )
-                fields.update(
-                    outcome="success", path_points=path_points,
-                    local_goal_xy=result.get("goal"), trajectory_frame=result.get("trajectory_frame"),
-                    server_odom_xyz=result.get("robot_pos"),
-                    server_depth_gap_ms=result.get("depth_rgb_gap_ms"),
-                    server_odom_gap_ms=result.get("odom_rgb_gap_ms"),
-                )
+                if recording:
+                    fields.update(
+                        outcome="success", path_points=path_points,
+                        local_goal_xy=result.get("goal"), trajectory_frame=result.get("trajectory_frame"),
+                        server_odom_xyz=result.get("robot_pos"),
+                        server_depth_gap_ms=result.get("depth_rgb_gap_ms"),
+                        server_odom_gap_ms=result.get("odom_rgb_gap_ms"),
+                    )
+                    _record_trajectory(parts, result, request)
                 return parts, elapsed_s
             except Exception as exc:
-                fields.update(
-                    outcome="failed",
-                    error_type=type(exc).__name__,
-                    reason=str(exc)[:300],
-                    failed_stage_ms=(time.monotonic() - phase_at) * 1000,
-                )
+                if recording:
+                    fields.update(
+                        outcome="failed",
+                        error_type=type(exc).__name__,
+                        reason=str(exc)[:300],
+                        failed_stage_ms=(time.monotonic() - phase_at) * 1000,
+                    )
                 raise
             finally:
                 if opened:
                     with self.lock:
-                        fields["missing_parts"] = sorted({"path", "result"} - self.parts.keys())
-                        fields["rejected_parts"] = dict(self.rejected_parts)
-                        if sent_at is not None:
-                            fields["part_ms"] = {
-                                part: (arrived - sent_at) * 1000
-                                for part, arrived in self.part_arrivals.items()
-                            }
+                        if recording:
+                            fields["missing_parts"] = sorted({"path", "result"} - self.parts.keys())
+                            fields["rejected_parts"] = dict(self.rejected_parts)
+                            if sent_at is not None:
+                                fields["part_ms"] = {
+                                    part: (arrived - sent_at) * 1000
+                                    for part, arrived in self.part_arrivals.items()
+                                }
                         self.pending = None
                         self.parts = {}
-                event(
-                    logger, "xnavdp_request_finished", **fields, stage=stage,
-                    elapsed_ms=(time.monotonic() - started) * 1000, timing_ms=dict(timings),
-                )
+                if recording:
+                    event(
+                        logger, "xnavdp_request_finished", **fields, stage=stage,
+                        elapsed_ms=(time.monotonic() - started) * 1000, timing_ms=dict(timings),
+                    )
 
     def stop(self):
         if self.closed:

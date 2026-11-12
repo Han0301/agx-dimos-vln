@@ -29,7 +29,7 @@ class Planner:
 
 @pytest.mark.parametrize("status", ["localized", "invalid_depth", "not_visible", "invalid_detection"])
 def test_current_frame_vlm_branch_precedes_independent_exploration(status):
-    from dimos.plugins.vln_task.find_object import FindObject
+    from dimos.vln_task.find_object import FindObject
 
     first = frame(100, 0)
     events = []
@@ -53,11 +53,11 @@ def test_current_frame_vlm_branch_precedes_independent_exploration(status):
     find = FindObject(lambda _: first, detect, explore, localized)
     result = find("white bin", lambda: 10, progress.append, threading.Event())
     assert progress[0]["status"] == "checking_current_view"
-    if status in {"not_visible", "invalid_depth"}:
+    if status != "localized":
         assert events == ["vlm", "explore"]
         assert result["status"] == "search_exhausted"
     else:
-        assert events == (["vlm", "localized"] if status == "localized" else ["vlm"])
+        assert events == ["vlm", "localized"]
         assert result["status"] == status
 
 

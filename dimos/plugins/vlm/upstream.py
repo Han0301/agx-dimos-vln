@@ -1,4 +1,4 @@
-"""Text-only Omni Realtime transport using one independent session per image."""
+"""Omni Realtime image input with text output and one session per request."""
 
 import base64
 import json
@@ -9,13 +9,26 @@ import cv2
 import websocket
 
 _SILENT_AUDIO = base64.b64encode(bytes(6400)).decode("ascii")
+_FRAME_INTERVAL_S = 1.0
+# One second of silence in the 16 kHz, 16-bit PCM input timeline.
+_FRAME_GAP_AUDIO = base64.b64encode(bytes(32_000)).decode("ascii")
 
 
-def encode_image(image):
-    for quality in (80, 65, 45, 25):
-        ok, data = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, quality])
-        if ok and len(data) <= 190000:
-            return base64.b64encode(data).decode("ascii")
+def encode_image(image, *, fit_frame=False):
+    height, width = image.shape[:2]
+    short, long = sorted((height, width))
+    fit_scale = min(1.0, 1080 / short, 1920 / long) if fit_frame else 1.0
+    ratios = (1.0, 0.75, 0.56) if fit_frame else (1.0,)
+    for ratio in ratios:
+        scale = fit_scale * ratio
+        frame = image if scale == 1 else cv2.resize(
+            image, (max(1, round(width * scale)), max(1, round(height * scale))),
+            interpolation=cv2.INTER_AREA,
+        )
+        for quality in (80, 65, 45, 25):
+            ok, data = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, quality])
+            if ok and len(data) <= 190_000:
+                return base64.b64encode(data).decode("ascii")
     raise RuntimeError("JPEG exceeds the Realtime image limit")
 
 
@@ -61,7 +74,14 @@ class OmniClient:
     def connected(self):
         return self._connected
 
-    def infer(self, image, prompt, *, timing, timeout=None):
+    def infer(self, image, prompt, *, timing, timeout=None, archive_input=None):
+        return self.infer_images(
+            (image,), prompt, timing=timing, timeout=timeout, archive_input=archive_input,
+        )
+
+    def infer_images(self, images, prompt, *, timing, timeout=None, archive_input=None):
+        if len(images) not in (1, 2):
+            raise ValueError("Realtime inference expects one or two ordered images")
         queued = time.monotonic()
         budget = self._timeout if timeout is None else min(self._timeout, timeout)
         deadline = queued + budget
@@ -97,23 +117,29 @@ class OmniClient:
             configured = time.monotonic()
             timing["session_configure"] = configured - connected
 
-            # Realtime images are attached to the audio timeline, without microphone input.
-            if self._last_frame is not None:
-                pause = 1.0 - (configured - self._last_frame)
-                if pause > 0:
-                    if pause >= _remaining(deadline):
-                        raise TimeoutError("VLM upstream request timed out before sending an image")
-                    time.sleep(pause)
-            ready = time.monotonic()
-            timing["frame_pacing"] = ready - configured
-
-            _send(connection, deadline, "input_audio_buffer.append", audio=_SILENT_AUDIO)
-            _send(connection, deadline, "input_image_buffer.append", image=encode_image(image))
-            self._last_frame = time.monotonic()
+            timing["frame_pacing"] = 0.0
+            for index, image in enumerate(images):
+                # Respect the documented 1 fps pacing and place each image at
+                # a distinct position on the audio timeline in the same turn.
+                before_pacing = time.monotonic()
+                if self._last_frame is not None:
+                    pause = _FRAME_INTERVAL_S - (before_pacing - self._last_frame)
+                    if pause > 0:
+                        if pause >= _remaining(deadline):
+                            raise TimeoutError("VLM upstream request timed out before sending an image")
+                        time.sleep(pause)
+                timing["frame_pacing"] += time.monotonic() - before_pacing
+                audio = _SILENT_AUDIO if index == 0 else _FRAME_GAP_AUDIO
+                _send(connection, deadline, "input_audio_buffer.append", audio=audio)
+                encoded_image = encode_image(image, fit_frame=True)
+                if archive_input is not None:
+                    archive_input(base64.b64decode(encoded_image))
+                _send(connection, deadline, "input_image_buffer.append", image=encoded_image)
+                self._last_frame = time.monotonic()
             _send(connection, deadline, "input_audio_buffer.commit")
             _wait_for(connection, deadline, "input_audio_buffer.committed")
             requested = time.monotonic()
-            timing["image_commit"] = requested - ready
+            timing["image_commit"] = requested - configured - timing["frame_pacing"]
             _send(connection, deadline, "response.create")
 
             chunks = []

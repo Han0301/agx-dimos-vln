@@ -52,7 +52,7 @@ class Tracker:
 
 
 def test_replans_same_world_goal_on_fresh_frames_until_arrival():
-    from dimos.plugins.vln_task.approach import ContinuousApproach
+    from dimos.vln_task.approach import ContinuousApproach
 
     tracker = Tracker()
     requests = []
@@ -77,8 +77,8 @@ def test_replans_same_world_goal_on_fresh_frames_until_arrival():
 
 
 def test_stop_clears_path_and_discards_inflight_result():
-    from dimos.plugins.vln_task.agent import TaskCancelled
-    from dimos.plugins.vln_task.approach import ContinuousApproach
+    from dimos.vln_task.agent import TaskCancelled
+    from dimos.vln_task.approach import ContinuousApproach
 
     tracker = Tracker()
     cancel = threading.Event()
@@ -98,7 +98,7 @@ def test_stop_clears_path_and_discards_inflight_result():
 
 
 def test_wrong_stamp_is_discarded_and_next_frame_can_update():
-    from dimos.plugins.vln_task.approach import ContinuousApproach
+    from dimos.vln_task.approach import ContinuousApproach
 
     tracker = Tracker(arrive_after=1)
 
@@ -115,7 +115,7 @@ def test_wrong_stamp_is_discarded_and_next_frame_can_update():
 
 
 def test_motion_agent_hands_confirmed_goal_to_loop_and_reports_arrival():
-    from dimos.plugins.vln_task.agent import TaskAgent
+    from dimos.vln_task.agent import TaskAgent
 
     calls = []
 
@@ -152,7 +152,7 @@ def test_motion_agent_hands_confirmed_goal_to_loop_and_reports_arrival():
 
 
 def test_transient_planner_error_keeps_goal_active():
-    from dimos.plugins.vln_task.approach import ContinuousApproach
+    from dimos.vln_task.approach import ContinuousApproach
     from dimos.plugins.xnavdp.client import XNavDPInferenceError
 
     tracker = Tracker(arrive_after=1)
@@ -180,7 +180,7 @@ def test_transient_planner_error_keeps_goal_active():
 def test_vlm_refresh_runs_during_planning_and_updates_next_point_goal(
     status, target_x, expected_goal_x,
 ):
-    from dimos.plugins.vln_task.approach import ContinuousApproach
+    from dimos.vln_task.approach import ContinuousApproach
 
     initial = {
         "status": "localized",
@@ -236,7 +236,6 @@ def test_vlm_refresh_runs_during_planning_and_updates_next_point_goal(
 
     approach = ContinuousApproach(
         observe, plan, tracker, detect=detect, refresh_interval_s=0.01, interval_s=0.05,
-        max_target_shift_m=0.55,
     )
     try:
         result = approach(initial, lambda: 10, threading.Event(), target="white bin")
@@ -246,3 +245,85 @@ def test_vlm_refresh_runs_during_planning_and_updates_next_point_goal(
     assert result["goal_xy"] == [expected_goal_x, 0.0]
     assert [goal for _, goal in requests] == [(3.0, 0.0), (expected_goal_x, 0.0)]
     assert requests[1][0] > requests[0][0]
+
+
+@pytest.mark.parametrize(
+    ("age", "last_request_stamp", "expected_request"),
+    [(0.0, None, 100), (0.6, None, 101), (0.0, 100, 101), (0.0, 102, 103)],
+)
+def test_first_request_reuses_only_fresh_unused_frontier_frame(age, last_request_stamp, expected_request):
+    import time
+
+    from dimos.vln_task.approach import ContinuousApproach
+
+    tracker = Tracker(arrive_after=1)
+    seed = frame(100)
+    seed.received_at = time.monotonic() - age
+    observations = []
+
+    def observe(check, *, after_stamp_ns, max_age_s):
+        observations.append(after_stamp_ns)
+        return frame(after_stamp_ns + 1)
+
+    approach = ContinuousApproach(
+        observe,
+        lambda observation, *_: (model_result(observation.stamp_ns), 0.01, 2),
+        tracker, interval_s=0, last_request_stamp=lambda: last_request_stamp,
+    )
+    approach(outcome(), lambda: 10, threading.Event(), initial_observation=seed)
+
+    assert tracker.updates == [expected_request]
+    assert observations == ([] if expected_request == 100 else [expected_request - 1])
+
+
+def test_odometry_wakes_replan_wait_without_sending_another_request():
+    from dimos.vln_task.approach import ContinuousApproach
+
+    waiting = threading.Event()
+
+    class ArrivalCondition(threading.Condition):
+        def wait(self, timeout=None):
+            waiting.set()
+            return super().wait(timeout)
+
+    tracker = Tracker(arrive_after=2)
+    tracker.cv = ArrivalCondition()
+    arrived = threading.Event()
+    tracker.reached = lambda *_: arrived.is_set()
+    requests = []
+
+    def plan(observation, *_):
+        requests.append(observation.stamp_ns)
+        return model_result(observation.stamp_ns), 0.01, 2
+
+    approach = ContinuousApproach(
+        lambda _, **kw: frame(kw["after_stamp_ns"] + 1), plan, tracker,
+        interval_s=10, arrival_condition=tracker.cv,
+    )
+    done = threading.Event()
+    results = []
+    cancel = threading.Event()
+
+    def run():
+        try:
+            results.append(approach(outcome(), lambda: 30, cancel))
+        finally:
+            done.set()
+
+    worker = threading.Thread(target=run)
+    worker.start()
+    try:
+        assert waiting.wait(2)
+        with tracker.cv:
+            arrived.set()
+            tracker.cv.notify_all()
+        assert done.wait(1)
+    finally:
+        cancel.set()
+        with tracker.cv:
+            tracker.cv.notify_all()
+        worker.join(timeout=2)
+
+    assert results[0]["status"] == "arrived"
+    assert requests == [101]
+    assert tracker.cleared == ["goal_reached"]

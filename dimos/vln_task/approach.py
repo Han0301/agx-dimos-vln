@@ -16,7 +16,7 @@ from .agent import TaskCancelled
 from .observation import TRACKING_MAX_AGE_S
 from .target_refresh import TargetRefresh
 
-logger = logging.getLogger('dimos.plugins.vln_task.approach')
+logger = logging.getLogger('dimos.vln_task.approach')
 
 
 class _Arrived(Exception):
@@ -26,16 +26,18 @@ class _Arrived(Exception):
 class ContinuousApproach(TargetRefresh):
     def __init__(
         self, observe, plan, tracker, *, interval_s=0.5, plan_timeout_s=3.0,
-        detect=None, refresh_interval_s=0.5, max_target_shift_m=0.55,
+        detect=None, refresh_interval_s=1.5,
+        last_request_stamp=None, arrival_condition=None,
     ):
         self.observe = observe
         self.plan = plan
         self.tracker = tracker
         self.interval_s = interval_s
         self.plan_timeout_s = plan_timeout_s
+        self.last_request_stamp = last_request_stamp
+        self.arrival_condition = arrival_condition
         self.detect = detect
         self.refresh_interval_s = refresh_interval_s
-        self.max_target_shift_m = max_target_shift_m
         self.worker = (
             ThreadPoolExecutor(max_workers=1, thread_name_prefix="approach-vlm")
             if detect is not None else None
@@ -66,9 +68,22 @@ class ContinuousApproach(TargetRefresh):
                 cancel_event.set()
                 self._clear("task_cancelled")
 
+    def _wait_for_replan(self, deadline, check, cancel):
+        if self.arrival_condition is None:
+            cancel.wait(min(max(0.0, deadline - time.monotonic()), check()))
+            return
+        # The tracker notifies this condition when fresh odometry arrives.
+        with self.arrival_condition:
+            while True:
+                budget = check()
+                delay = deadline - time.monotonic()
+                if delay <= 0:
+                    return
+                self.arrival_condition.wait(timeout=min(delay, budget, 0.1))
+
     def __call__(
         self, outcome, remaining, cancel, on_progress=None,
-        *, target=None, accept_path=None, motion_guard=None,
+        *, target=None, accept_path=None, motion_guard=None, initial_observation=None,
     ):
         goal = tuple(outcome["goal_xy"])
         world_frame = outcome["world_frame"]
@@ -146,11 +161,27 @@ class ContinuousApproach(TargetRefresh):
                 phase = "observation"
                 request_timing = {}
                 try:
-                    frame = self.observe(
-                        check, after_stamp_ns=last_stamp, max_age_s=TRACKING_MAX_AGE_S
+                    seed, initial_observation = initial_observation, None
+                    last_requested = (
+                        self.last_request_stamp() or 0
+                        if seed is not None and self.last_request_stamp is not None else 0
                     )
-                    if frame.stamp_ns <= last_stamp:
-                        raise TimeoutError("No newer RGB frame for this goal")
+                    reused_seed = (
+                        seed is not None
+                        and seed.stamp_ns == last_stamp
+                        and seed.stamp_ns > last_requested
+                        and seed.odom.header.frame_id == world_frame
+                        and 0 <= started - seed.received_at <= TRACKING_MAX_AGE_S
+                    )
+                    if reused_seed:
+                        frame = seed
+                    else:
+                        after_stamp = max(last_stamp, last_requested)
+                        frame = self.observe(
+                            check, after_stamp_ns=after_stamp, max_age_s=TRACKING_MAX_AGE_S,
+                        )
+                        if frame.stamp_ns <= after_stamp:
+                            raise TimeoutError("No newer RGB frame for this goal")
                     last_stamp = frame.stamp_ns
                     if frame.odom.header.frame_id != world_frame:
                         raise RuntimeError("Odometry frame changed during approach")
@@ -172,6 +203,7 @@ class ContinuousApproach(TargetRefresh):
                         depth_gap_ms=getattr(frame, "depth_gap_ms", None),
                         odom_gap_ms=getattr(frame, "odom_gap_ms", None),
                         observation_wait_ms=(plan_started - started) * 1000,
+                        reused_initial_observation=reused_seed,
                     )
                     phase = "planner"
                     try:
@@ -235,8 +267,7 @@ class ContinuousApproach(TargetRefresh):
                         last_stamp, type(exc).__name__,
                     )
                     progress("replanning")
-                delay = max(0.0, self.interval_s - (time.monotonic() - started))
-                cancel.wait(min(delay, check()))
+                self._wait_for_replan(started + self.interval_s, check, cancel)
         except _Arrived:
             end_reason = "goal_reached"
         except Exception as exc:

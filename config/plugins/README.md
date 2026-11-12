@@ -9,6 +9,7 @@
 | LLM | [llm.yaml](llm/llm.yaml) | [README](llm/README.md) | `python -m dimos.plugins.llm` |
 | VLN Task 上层入口 | [vln_task.yaml](vln_task/vln_task.yaml) | [README](vln_task/README.md) | `python -m dimos.vln_task` |
 | VLN Task 搜索工作流 | [active_search.yaml](active_search/active_search.yaml) | [README](active_search/README.md) | `python -m dimos.vln_task.search --check` |
+| 空间记忆 | `DIMOS_SIMPLE_ROOT` | [README](spatial_memory/README.md) | `dimos.plugins.spatial_memory.SimpleMemory` |
 | Web input | [web_input.yaml](web_input/web_input.yaml) | [README](web_input/README.md) | `python -m dimos.plugins.web_input` |
 | 运行日志 | 默认 `data/log` | [README](runtime_log/README.md) | `bash sh/start_log.sh` |
 | XNavDP | [xnavdp_test.yaml](xnavdp/xnavdp_test.yaml) | [README](xnavdp/README.md) | `python -m dimos.plugins.xnavdp` |
