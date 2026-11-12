@@ -6,6 +6,24 @@
 - 新增诊断在构造日志字段前检查录制开关。启用录制时，诊断通过有界后台队列写入，队列满或写入失败时丢弃诊断并记录健康状态，推理和控制线程继续执行。
 - 验收同时覆盖开关两态。关闭时用测试确认日志专用工作未执行，启用时核对事件和附件可关联。涉及高频路径时对照测量调用延迟、CPU、内存及队列丢弃。
 
+## 采集接口与终端展示
+
+`capture(module, ...)` 和 `create_run(module, ...)` 使用登记模块名创建运行目录，返回目录或 `None`；`capture` 在上下文内提供该结果。入口可传入元数据或惰性元数据函数，插件不读取 VLN profile。`task_context`、`event_context` 关联调用方提供的任务 ID 和诊断字段；`event` 提交结构化事件，附件接口返回排队成功的相对路径或 `None`。路径已返回不代表后台写盘已完成，仍需核对归档文件与 writer 健康信息。接口实现见 [runtime_log](../../../dimos/plugins/runtime_log/__init__.py)。
+
+独立记录器按已登记运行收集文件，归档内容不受实时显示白名单筛选。当前记录器终端只转显以下组件的 JSONL；其他组件仍可归档。
+
+| 登记模块 | 实时显示的组件 |
+| --- | --- |
+| `web_input` | `web_input`、`vln_task`、`llm`、`vlm`、`active_search`、`xnavdp`、`path_tracker` |
+| `path_tracker` | `path_tracker` |
+| `body` | `robot` |
+
+符合记录格式且没有 `event` 字段的普通日志参与上述显示；带 `event` 字段时，仅显示 `task_submitted`、`task_finished`、`stop_requested`、`tracker_arrival`、`body_command_forwarded`、`body_command_failed`、`body_stop_observed` 和 `body_stop_observation_expired`。例如 `spatial_memory` 的采样与查询事件应在归档中查看。生命周期信息另由记录器显示，筛选实现见 [recorder](../../../dimos/plugins/runtime_log/recorder.py)。
+
+Web 所在终端另由现有 `task_console()` 配置显示，与独立记录器的终端筛选不同。它显示 `dimos.plugins`、`dimos.path_tracker`、`dimos.vln_task` 命名空间及子命名空间的 INFO 日志，并接收 WARNING 及以上记录；同时过滤 Uvicorn 成功返回 200 的 `GET /status` 访问日志，包括带查询参数的请求。该显示能力不要求开启文件录制，当前调用者位于 [VLN CLI](../../../dimos/vln_task/cli.py)。上述规则是现有固定行为，新增任务的归档可复用现有接口，不能据此假定其事件会自动进入实时显示列表。
+
+## 记录与归档
+
 在一个独立终端启动记录器，再在各自的终端按原命令启动模块。
 
 在项目根目录执行：

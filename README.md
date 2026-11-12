@@ -20,7 +20,7 @@ XNavDP ──→ 已校验的任务路径 ──→ 内置 tracker ──→ /cm
 | --- | --- |
 | `web_input`、`vln_task` | 网页接收文字和可选图片。主 Agent 管理任务历史、工具调用、期限及状态 |
 | `llm`、`vlm` | 分别调用 Ollama 与 DashScope。VLN Task 的 Web 适配启动时预热 LLM，VLM 由当前进程按需调用 |
-| `vln_task/search` | 实机原地扫视；目标匹配但深度无效时沿目标方向安全短步靠近并复检。回放用录制视角 |
+| `vln_task/search` | 默认实机入口使用记忆与前沿探索；未启用记忆的 motion 装配使用原地扫视。深度无效时定向换视角，回放用录制视角 |
 | `xnavdp` | 用原始 RGB 时间戳提交点目标，关联并校验服务端的原生轨迹与结果 |
 | `path_tracker` | 用路径、最新里程计、原始深度和可选障碍输入计算速度。实机配置发布 `/cmd_vel` |
 | `runtime_log` | 独立前台终端，按实际启动的模块归档输出、ROS 日志与阶段耗时 |
@@ -32,9 +32,13 @@ XNavDP ──→ 已校验的任务路径 ──→ 内置 tracker ──→ /cm
 ![VLN Task 上层与基础插件调用关系](doc/architecture/diagrams/vln_modules.png)
 
 <details>
-<summary>展开找物与自由探索流程</summary>
+<summary>展开非记忆 motion 模式的找物、扫视与深度恢复流程</summary>
 
-![VLN Task 组织检测、搜索、深度恢复和接近](doc/architecture/diagrams/object_search.png)
+此图对应未启用记忆探索的 motion 分支；默认实机 Shell 入口的记忆与前沿流程见 [VLN 操作说明](doc/skills/vln-operations/SKILL.md#自由探索测试)。
+
+图中 LiDAR 是显式配置 `topics.lidar` 时的附加探索输入。默认探索局部图使用 RGB-D，`/lidar` 另用于 tracker 的控制代价地图。
+
+![未启用记忆时的找物、扫视与接近](doc/architecture/diagrams/object_search.png)
 
 </details>
 

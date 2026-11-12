@@ -21,11 +21,13 @@ python -m dimos.vln_task.benchmark --image path/to/shapes.jpg --output path/to/b
 
 ## 调用链与兼容
 
-`agent.py` 管理 LLM 工具调用；`find_object.py` 分派首帧结果；`search/` 组织扫视、定向靠近和复检；`perception.py` 负责检测与定位；`preview.py` 组合路径和速度预览；`approach.py` 持续更新规划，`target_refresh.py` 管理接近中的目标刷新。`assembly.py` 装配客户端与跟踪器，`web.py` 提供模型预热及任务状态展示策略。
+`agent.py` 管理 LLM 工具调用；`find_object.py` 分派首帧结果；`search/` 组织记忆与前沿探索、扫视、定向靠近和复检；`perception.py` 负责检测与定位；`preview.py` 组合路径和速度预览；`approach.py` 持续更新规划，`target_refresh.py` 管理接近中的目标刷新。`assembly.py` 装配客户端与跟踪器，`web.py` 提供模型预热及任务状态展示策略。
 
-LLM/VLM 只调用模型，XNavDP 只请求和校验路径，tracker 保留控制及停止保护。任务策略由 VLN Task 组织。`web_input/transport.py` 提供可注入 runner 的通用 HTTP、队列及取消接口。
+LLM/VLM 只调用模型，XNavDP 只请求和校验路径，tracker 保留控制及停止保护。任务策略由 VLN Task 组织。`web_input/transport.py` 提供可注入 runner 的 HTTP、队列及取消能力，同时保留现有 VLN 首页与导航路由；兼容入口及当前配置边界见 [插件组织](../../../doc/architecture/plugins.md#vln-task-上层归属)。
 
 旧搜索路径 `dimos.plugins.active_search` 转调 `dimos.vln_task.search`。
+
+默认实机 Shell 入口开启记忆与前沿探索；未启用记忆的 motion 装配使用旋转扫视；preview/bag 等待外部新视角。具体分支见 [主动找物工作流](../active_search/README.md#模式选择)，这些模式继续使用现有配置、接口和停止保护。
 
 ## 整合路径预览
 
