@@ -52,7 +52,7 @@ select = ["E4", "E7", "E9", "F", "I"]
 "**/test_ros_io.py" = ["E402"]
 
 [tool.setuptools.package-data]
-"dimos.plugins.web_input" = ["index.html"]
+"dimos.vln_task" = ["index.html"]
 
 [tool.setuptools.cmdclass]
 sdist = "_build.sdist"

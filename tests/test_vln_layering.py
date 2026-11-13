@@ -74,17 +74,27 @@ def test_web_transport_runs_generic_tasks_without_importing_navigation():
     assert importlib.util.find_spec("dimos.plugins.web_input.transport"), "Web transport must be independent"
     code = '''
 import sys
-from fastapi.testclient import TestClient
+import asyncio
+import httpx
 from dimos.plugins._agent_common import load_config
 from dimos.plugins.web_input.transport import create_app
 class Runner:
     def run(self, goal, image=None, cancel=None):
         return {"answer": goal.upper()}
-with TestClient(create_app(load_config("web_input"), Runner)) as web:
-    submitted = web.post("/tasks", json={"goal": "hello"}).json()
-    result = web.get("/tasks/" + submitted["task_id"], params={"wait_s": 2}).json()
-    assert result["status"] == "succeeded", result
-    assert result["result"] == {"answer": "HELLO"}, result
+async def exercise():
+    app = create_app(load_config("web_input"), Runner)
+    assert not {"/", "/navigate", "/stop", "/status", "/realsense_feed"} & {
+        route.path for route in app.routes
+    }
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test",
+        ) as web:
+            submitted = (await web.post("/tasks", json={"goal": "hello"})).json()
+            result = (await web.get("/tasks/" + submitted["task_id"], params={"wait_s": 2})).json()
+            assert result["status"] == "succeeded", result
+            assert result["result"] == {"answer": "HELLO"}, result
+asyncio.run(exercise())
 assert not any(name.startswith(("dimos.vln_task", "dimos.plugins.llm", "dimos.plugins.vlm", "dimos.plugins.path_tracker", "rclpy")) for name in sys.modules)
 '''
     completed = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=20)

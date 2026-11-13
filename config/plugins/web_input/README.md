@@ -8,7 +8,9 @@ bash sh/start_web_input.sh --profile config/profiles/vln_preview.yaml
 
 配置为 `web_input.yaml`，默认监听 `127.0.0.1:5556`，网页接受文字及可选 JPEG/PNG。每个任务独立绑定上传图。单 worker 调用主 agent，队列和终态记录有容量上限；达到记录上限时优先淘汰最早的终态记录。
 
-首页提供 VLN Navigation 界面。使用 `vln_preview` 配置时，RealSense RGB 和深度面板读取现有 ROS 相机或 bag 数据。Go2 和 Frontier 面板保留等待提示。Navigate 与 Stop 分别提交和取消任务。多视角找物显示检测、搜索、路径就绪或搜索结束未找到。
+通用传输由 `dimos.plugins.web_input.transport.create_app` 创建。输入包括容量配置、任务执行器工厂以及可选的执行、取消、启动、健康状态、日志和路由回调。插件输出 FastAPI 应用与任务记录。应用路由可以通过注入的能力提交任务、读取快照和按来源取消任务。
+
+VLN Task 注册导航路由并提供 VLN Navigation 页面、参考图分派、相机流和 Stop 策略。使用 `vln_preview` 配置时，RealSense RGB 和深度面板读取现有 ROS 相机或 bag 数据。Go2 和 Frontier 面板保留等待提示。Navigate 与 Stop 分别提交和取消任务。多视角找物显示检测、搜索、路径就绪或搜索结束未找到。
 
 | 接口 | 输入与结果 |
 | --- | --- |
@@ -16,7 +18,7 @@ bash sh/start_web_input.sh --profile config/profiles/vln_preview.yaml
 | `GET /health` | 当前进程 worker、队列和运行状态。profile 启用 LLM 预加载时包含 `llm_warmup` |
 | `POST /tasks`、`POST /navigate` | JSON goal、可选 image_base64，返回 202 和 task_id |
 | `POST /navigate` | 网页 multipart 表单，字段为 goal 和可选 image，返回 success 和 task_id |
-| `GET /status`、`POST /stop` | 查询网页任务状态、取消未完成的网页任务。查询可传 `task_id`，搜索状态返回 `stage` 和 `task_id` |
+| `GET /status`、`POST /stop` | 查询网页任务状态、取消未完成的网页任务。实机模式下 Stop 也取消 API 队列中的任务。查询可传 `task_id`，搜索状态返回 `stage` 和 `task_id` |
 | `GET /tasks/{task_id}` | 查询任务状态和结果。可用 `wait_s=20` 等待任务完成、失败或取消，超时返回当前状态 |
 | `POST /tasks/{task_id}/cancel` | 取消指定任务，后续迟到结果丢弃 |
 

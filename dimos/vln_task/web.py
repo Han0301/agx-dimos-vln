@@ -1,6 +1,14 @@
 """VLN application adapter for the domain-independent Web transport."""
 
+import asyncio
 import logging
+from functools import partial
+from pathlib import Path
+
+from fastapi import HTTPException, Request
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from starlette.datastructures import UploadFile
+from starlette.formparsers import MultiPartException, MultiPartParser
 from httpx import HTTPError
 
 from dimos.plugins._agent_common import load_config
@@ -96,6 +104,16 @@ class VLNWebPolicy:
         return {} if self.llm_warmup is None else {"llm_warmup": self.llm_warmup.copy()}
 
     @staticmethod
+    def progress_fields(progress):
+        return {
+            "attempts": progress.get("attempts"),
+            "max_attempts": progress.get("max_attempts"),
+            **{key: progress[key] for key in (
+                "source_stamp_ns", "memory_lookup_id", "leg_id", "leg_kind", "reason",
+            ) if key in progress},
+        }
+
+    @staticmethod
     def result_fields(result):
         navigation = result.get("navigation") if isinstance(result, dict) else None
         if not isinstance(navigation, dict):
@@ -173,6 +191,104 @@ class VLNWebPolicy:
         return {"status": f"{label}: {task['goal']}"}
 
 
+def _execute(runner, goal, image, *, cancel, on_progress):
+    run = getattr(runner, "run_with_reference", None) if image is not None else None
+    if run is None:
+        run = getattr(runner, "run_with_progress", None)
+    if run is None:
+        return runner.run(goal, image, cancel=cancel)
+    return run(goal, image, cancel=cancel, on_progress=on_progress)
+
+
+def _cancel_motion(runner, cancel):
+    callback = getattr(runner, "cancel_motion", None)
+    if callback is not None:
+        callback(cancel)
+
+
+def _register_routes(policy, app, *, get_runner, enqueue, submit, bounded_stream,
+                     task_snapshot, cancel_matching):
+    browser_task_id = None
+
+    @app.get("/", response_class=HTMLResponse)
+    def index():
+        return Path(__file__).with_name("index.html").read_text(encoding="utf-8")
+
+    @app.post("/navigate", status_code=202)
+    async def navigate(request: Request):
+        nonlocal browser_task_id
+        content_type = request.headers.get("content-type", "").partition(";")[0]
+        if content_type.strip().lower() != "multipart/form-data":
+            return await submit(request)
+
+        try:
+            form = await MultiPartParser(
+                request.headers, bounded_stream(request), max_files=1, max_fields=1
+            ).parse()
+            try:
+                upload = form.get("image")
+                if upload is not None and not isinstance(upload, UploadFile):
+                    raise HTTPException(422, "Expected an image file")
+                image = await upload.read() if upload is not None else None
+                task = enqueue(form.get("goal"), image, source="browser")
+                browser_task_id = task["task_id"]
+            finally:
+                await form.close()
+        except MultiPartException as exc:
+            return JSONResponse({"success": False, "message": exc.message}, 422)
+        except HTTPException as exc:
+            return JSONResponse(
+                {"success": False, "message": exc.detail}, exc.status_code
+            )
+        return JSONResponse(
+            {"success": True, "goal": task["goal"], "task_id": task["task_id"]}
+        )
+
+    @app.post("/stop")
+    async def stop():
+        stop_all = getattr(get_runner(), "cancel_motion", None) is not None
+        cancel_matching(lambda source: stop_all or source == "browser", source="web_stop")
+        return {"success": True}
+
+    @app.get("/status")
+    async def browser_status(task_id: str | None = None):
+        task = task_snapshot(task_id if task_id is not None else browser_task_id)
+        if task is None or task["source"] != "browser":
+            if task_id is not None:
+                raise HTTPException(404, "Browser task unknown or evicted")
+            return {"status": "idle"}
+        if task["status"] == "cancelled":
+            return {"status": "stopped"}
+        if task["status"] == "failed":
+            return {"status": f"failed: {task['error']}"}
+        return policy.status(task)
+
+    @app.get("/camera_feed")
+    @app.get("/frontier_feed")
+    async def unavailable_feed():
+        raise HTTPException(404, "No source for this feed")
+
+    @app.get("/realsense_feed")
+    @app.get("/depth_feed")
+    async def realsense_feed(request: Request):
+        camera_frame = getattr(get_runner(), "camera_frame", None)
+        if camera_frame is None:
+            raise HTTPException(404, "The profile has no camera source")
+        depth = request.url.path == "/depth_feed"
+
+        async def stream():
+            while True:
+                frame = await asyncio.to_thread(camera_frame, depth)
+                if frame is not None:
+                    yield (
+                        b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame + b"\r\n"
+                    )
+                await asyncio.sleep(0.1)
+
+        return StreamingResponse(
+            stream(), media_type="multipart/x-mixed-replace; boundary=frame"
+        )
+
 def create_app(config, runner_factory=None, *, llm_preload_timeout_s=None):
     if runner_factory is None:
         def runner_factory():
@@ -180,5 +296,7 @@ def create_app(config, runner_factory=None, *, llm_preload_timeout_s=None):
     policy = VLNWebPolicy(llm_preload_timeout_s)
     return create_transport(
         config, runner_factory, startup=policy.startup, health_details=policy.health,
-        format_status=policy.status, result_fields=policy.result_fields,
+        result_fields=policy.result_fields, progress_fields=policy.progress_fields,
+        execute=_execute, on_cancel=_cancel_motion,
+        register_routes=partial(_register_routes, policy), title="Standalone VLN task input",
     )

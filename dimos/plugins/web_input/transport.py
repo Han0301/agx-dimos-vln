@@ -12,12 +12,8 @@ import traceback
 import uuid
 from contextlib import asynccontextmanager
 from functools import partial
-from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
-from starlette.datastructures import UploadFile
-from starlette.formparsers import MultiPartException, MultiPartParser
 
 from dimos.plugins._agent_common import TaskCancelled, validate_image
 from dimos.plugins.runtime_log import event, recording_enabled, task_context
@@ -25,25 +21,15 @@ from dimos.plugins.runtime_log._redaction import redact_text
 
 logger = logging.getLogger("dimos.plugins.web_input.app")
 
-def run_reference_task(runner, goal, image, *, cancel, on_progress):
-    """Pass a task with an image to the runner's optional reference entry point."""
-    run = getattr(runner, "run_with_reference", None)
-    if run is None:
-        run = getattr(runner, "run_with_progress", None)
-    if run is None:
-        return runner.run(goal, image, cancel=cancel)
-    return run(goal, image, cancel=cancel, on_progress=on_progress)
-
-
 def create_app(config, runner_factory, *, startup=None, health_details=None,
-               format_status=None, result_fields=None):
+               result_fields=None, progress_fields=None, execute=None, on_cancel=None, register_routes=None,
+               title="Task input"):
     pending = queue.Queue(maxsize=config["queue_size"])
     records, lock = {}, threading.RLock()
     stopping = threading.Event()
     worker_thread = None
-    camera_frame = None
-    cancel_motion = None
-    browser_task_id = None
+    runner = None
+
     def report_progress(task, progress):
         with lock:
             if task["status"] == "running" and not task["cancel"].is_set():
@@ -51,10 +37,7 @@ def create_app(config, runner_factory, *, startup=None, health_details=None,
                 task["progress"] = dict(progress)
                 if progress.get("status") != previous.get("status"):
                     event(logger, "task_stage", stage=progress.get("status"),
-                          attempts=progress.get("attempts"), max_attempts=progress.get("max_attempts"),
-                          **{key: progress[key] for key in (
-                              "source_stamp_ns", "memory_lookup_id", "leg_id", "leg_kind", "reason",
-                          ) if key in progress})
+                          **(progress_fields(progress) if progress_fields is not None else {}))
 
     def worker(runner, loop):
         run_with_progress = getattr(runner, "run_with_progress", None)
@@ -81,8 +64,8 @@ def create_app(config, runner_factory, *, startup=None, health_details=None,
                             max(0, task["started_at"] - task["created_at"]) * 1000,
                         )
                         try:
-                            if image is not None:
-                                result = run_reference_task(
+                            if execute is not None:
+                                result = execute(
                                     runner, task["goal"], image, cancel=task["cancel"],
                                     on_progress=partial(report_progress, task),
                                 )
@@ -150,14 +133,12 @@ def create_app(config, runner_factory, *, startup=None, health_details=None,
 
     @asynccontextmanager
     async def lifespan(app):
-        nonlocal worker_thread, camera_frame, cancel_motion
+        nonlocal worker_thread, runner
         runner = runner_factory()
-        camera_frame = getattr(runner, "camera_frame", None)
-        cancel_motion = getattr(runner, "cancel_motion", None)
         worker_thread = threading.Thread(
             target=worker,
             args=(runner, asyncio.get_running_loop()),
-            name="vln-task-worker",
+            name="web-task-worker",
         )
         worker_thread.start()
         logger.info("worker started queue_capacity=%d", config["queue_size"])
@@ -172,18 +153,14 @@ def create_app(config, runner_factory, *, startup=None, health_details=None,
                 await asyncio.to_thread(worker_thread.join)
                 logger.info("worker stopped")
 
-    app = FastAPI(title="Standalone VLN task input", lifespan=lifespan)
+    app = FastAPI(title=title, lifespan=lifespan)
 
     def public(task):
         return {
             key: value
             for key, value in task.items()
-            if key not in {"image", "cancel", "done", "browser", "queued_monotonic"}
+            if key not in {"image", "cancel", "done", "source", "queued_monotonic"}
         }
-
-    @app.get("/", response_class=HTMLResponse)
-    def index():
-        return Path(__file__).with_name("index.html").read_text(encoding="utf-8")
 
     @app.get("/health")
     def health():
@@ -223,8 +200,7 @@ def create_app(config, runner_factory, *, startup=None, health_details=None,
             raise HTTPException(422, str(exc)) from exc
         return enqueue(goal, image)
 
-    def enqueue(goal, image, *, browser=False):
-        nonlocal browser_task_id
+    def enqueue(goal, image, *, source="api"):
         try:
             if not isinstance(goal, str) or not goal.strip() or len(goal) > 4000:
                 raise ValueError("Goal must contain 1..4000 characters")
@@ -245,7 +221,7 @@ def create_app(config, runner_factory, *, startup=None, health_details=None,
             "image": image,
             "cancel": threading.Event(),
             "done": asyncio.Event(),
-            "browser": browser,
+            "source": source,
         }
         with lock:
             if len(records) >= config["max_records"]:
@@ -260,43 +236,13 @@ def create_app(config, runner_factory, *, startup=None, health_details=None,
             except queue.Full as exc:
                 raise HTTPException(429, "Task queue full") from exc
             records[task["task_id"]] = task
-            if browser:
-                browser_task_id = task["task_id"]
             with task_context(task["task_id"]):
                 logger.info(
-                    "task queued has_image=%s browser=%s", image is not None, browser
+                    "task queued has_image=%s source=%s", image is not None, source
                 )
                 event(logger, "task_submitted", goal_chars=len(goal), has_image=image is not None,
-                      source="browser" if browser else "api")
+                      source=source)
             return public(task)
-
-    @app.post("/navigate", status_code=202)
-    async def navigate(request: Request):
-        content_type = request.headers.get("content-type", "").partition(";")[0]
-        if content_type.strip().lower() != "multipart/form-data":
-            return await submit(request)
-
-        try:
-            form = await MultiPartParser(
-                request.headers, bounded_stream(request), max_files=1, max_fields=1
-            ).parse()
-            try:
-                upload = form.get("image")
-                if upload is not None and not isinstance(upload, UploadFile):
-                    raise HTTPException(422, "Expected an image file")
-                image = await upload.read() if upload is not None else None
-                task = enqueue(form.get("goal"), image, browser=True)
-            finally:
-                await form.close()
-        except MultiPartException as exc:
-            return JSONResponse({"success": False, "message": exc.message}, 422)
-        except HTTPException as exc:
-            return JSONResponse(
-                {"success": False, "message": exc.detail}, exc.status_code
-            )
-        return JSONResponse(
-            {"success": True, "goal": task["goal"], "task_id": task["task_id"]}
-        )
 
     def cancel_tasks(tasks, *, source):
         active = []
@@ -315,64 +261,10 @@ def create_app(config, runner_factory, *, startup=None, health_details=None,
                     task["image"] = None
                     task["done"].set()
                     logger.info("task cancelled")
-        if cancel_motion is not None:
+        if on_cancel is not None:
             for task in active:
                 with task_context(task["task_id"]):
-                    cancel_motion(task["cancel"])
-
-    @app.post("/stop")
-    async def stop():
-        # In motion mode, queued API goals must not restart motion after Stop.
-        cancel_tasks(
-            tuple(
-                task for task in records.values()
-                if task["browser"] or cancel_motion is not None
-            ),
-            source="web_stop",
-        )
-        return {"success": True}
-
-    @app.get("/status")
-    async def browser_status(task_id: str | None = None):
-        with lock:
-            task = records.get(task_id if task_id is not None else browser_task_id)
-            if task is None or not task["browser"]:
-                if task_id is not None:
-                    raise HTTPException(404, "Browser task unknown or evicted")
-                return {"status": "idle"}
-            state = task["status"]
-            if state == "cancelled":
-                return {"status": "stopped"}
-            if state == "failed":
-                return {"status": f"failed: {task['error']}"}
-            if format_status is not None:
-                return format_status(task)
-            return {"status": f"{state}: {task['goal']}"}
-
-    @app.get("/camera_feed")
-    @app.get("/frontier_feed")
-    async def unavailable_feed():
-        raise HTTPException(404, "No source for this feed")
-
-    @app.get("/realsense_feed")
-    @app.get("/depth_feed")
-    async def realsense_feed(request: Request):
-        if camera_frame is None:
-            raise HTTPException(404, "The profile has no camera source")
-        depth = request.url.path == "/depth_feed"
-
-        async def stream():
-            while True:
-                frame = await asyncio.to_thread(camera_frame, depth)
-                if frame is not None:
-                    yield (
-                        b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame + b"\r\n"
-                    )
-                await asyncio.sleep(0.1)
-
-        return StreamingResponse(
-            stream(), media_type="multipart/x-mixed-replace; boundary=frame"
-        )
+                    on_cancel(runner, task["cancel"])
 
     @app.get("/tasks/{task_id}")
     async def status(task_id: str, wait_s: float = Query(0, ge=0, le=20)):
@@ -398,4 +290,20 @@ def create_app(config, runner_factory, *, startup=None, health_details=None,
         with lock:
             return public(task)
 
+    if register_routes is not None:
+        def task_snapshot(task_id):
+            with lock:
+                task = records.get(task_id)
+                return None if task is None else {**public(task), "source": task["source"]}
+
+        def cancel_matching(predicate, *, source):
+            with lock:
+                selected = tuple(task for task in records.values() if predicate(task["source"]))
+            cancel_tasks(selected, source=source)
+
+        register_routes(
+            app, get_runner=lambda: runner, enqueue=enqueue, submit=submit,
+            bounded_stream=bounded_stream, task_snapshot=task_snapshot,
+            cancel_matching=cancel_matching,
+        )
     return app
