@@ -5,6 +5,9 @@ from types import SimpleNamespace as NS
 import pytest
 
 from dimos.plugins.active_search.search import ActiveSearch
+from dimos.plugins.runtime_log import capture
+
+from test_navigation_safety_logging import records
 
 
 def frame(stamp, yaw):
@@ -21,7 +24,7 @@ def frame(stamp, yaw):
 
 
 @pytest.mark.parametrize("hit_at", [None, 2])
-def test_sweep_checks_five_new_headings_or_stops_at_hit(hit_at):
+def test_sweep_checks_four_new_headings_or_stops_at_hit(tmp_path, hit_at):
     from dimos.plugins.active_search.exploration import RotationSweep
 
     initial = frame(100, math.radians(160))
@@ -40,8 +43,9 @@ def test_sweep_checks_five_new_headings_or_stops_at_hit(hit_at):
         assert stopped
         assert after_stamp_ns == 100 + len(turns) - 1
         observation = frame(after_stamp_ns + 1, turns[-1] - math.radians(6))
+        observation.observation_id = f"view-{observation.stamp_ns}"
         assert accept_odom(observation.odom)
-        assert not accept_odom(frame(observation.stamp_ns, turns[-1] - math.radians(8)).odom)
+        assert not accept_odom(frame(observation.stamp_ns, turns[-1] - math.radians(11)).odom)
         return observation
 
     def detect(observation, target, remaining):
@@ -56,15 +60,20 @@ def test_sweep_checks_five_new_headings_or_stops_at_hit(hit_at):
         observe, detect,
         lambda observation, result, remaining: {"status": "localized"},
     )
-    result = search(
-        "box", lambda: 90, next_view=sweep,
-        initial_frame=initial, initial_detection={"status": "not_visible"},
-    )
-    expected = [220, 280] if hit_at else [220, 280, 340, 400, 460]
+    with capture("web_input", base=tmp_path) as run:
+        result = search(
+            "box", lambda: 90, next_view=sweep,
+            initial_frame=initial, initial_detection={"status": "not_visible"},
+        )
+    expected = [235, 310] if hit_at else [235, 310, 385, 460]
     assert [math.degrees(yaw) % 360 for yaw in turns] == pytest.approx([x % 360 for x in expected])
     assert detections == list(range(101, 101 + len(expected)))
     assert result["status"] == ("localized" if hit_at else "search_exhausted")
     assert result["search"]["reason"] == ("confirmed" if hit_at else "sweep_complete")
+    steps = records(run, "active_search", "exploration_leg_finished")
+    assert [step["sweep_step"] for step in steps] == list(range(1, len(expected) + 1))
+    assert [step["observation_id"] for step in steps] == [f"view-{stamp}" for stamp in detections]
+    assert [step["heading_error_rad"] for step in steps] == pytest.approx([math.radians(6)] * len(expected))
 
 
 def test_sweep_hands_a_matching_box_with_bad_depth_to_directed_approach():
@@ -149,5 +158,5 @@ def test_directed_checks_leave_remaining_sweep_headings_available():
         toward_target=toward_target,
     )
     assert directed_views == list(range(102, 109))
-    assert [math.degrees(yaw) % 360 for yaw in turns] == pytest.approx([60, 120, 180, 240, 300])
+    assert [math.degrees(yaw) % 360 for yaw in turns] == pytest.approx([75, 150, 225, 300])
     assert result["search"]["reason"] == "sweep_complete"

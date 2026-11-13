@@ -122,7 +122,7 @@ def test_approach_refresh_limits_xy_distance_from_original_target():
     from dimos.vln_task.agent import TaskCancelled
     from dimos.vln_task.target_refresh import TargetRefresh
 
-    samples = iter([(0.6, 0., 2.), (1.2, 0., 0.), (0., 1., 0.)])
+    samples = iter([(0.6, 0., 2.), (1.26, 0., 0.), (0., 1.25, 0.)])
 
     def observe(check, *, after_stamp_ns, max_age_s):
         return NS(stamp_ns=after_stamp_ns + 1, odom=NS(header=NS(frame_id="world")))
@@ -144,4 +144,4 @@ def test_approach_refresh_limits_xy_distance_from_original_target():
                 "target_xyz": [0., 0., 0.]},
         lambda: 5, Event(), Event(), updates,
     )
-    assert [update["target_xyz"] for update in updates] == [(0.6, 0., 2.), (0., 1., 0.)]
+    assert [update["target_xyz"] for update in updates] == [(0.6, 0., 2.), (0., 1.25, 0.)]

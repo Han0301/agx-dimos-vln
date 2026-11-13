@@ -15,13 +15,17 @@ class Planner:
     def __init__(self, *goals):
         self.goals = goals
         self.explored = []
+        self.failed = []
 
     def mark_explored(self, goal):
         if goal.final:
             self.explored.append(goal.frontier_xy)
 
-    def select(self, grid, *, origin_xy, resolution, robot_xy, allow_frontier):
-        return next((goal for goal in self.goals if allow_frontier(goal.frontier_xy)), None)
+    def mark_failed(self, goal):
+        self.failed.append(goal.frontier_xy)
+
+    def select(self, grid, *, origin_xy, resolution, robot_xy):
+        return next((goal for goal in self.goals if goal.frontier_xy not in self.failed), None)
 
 
 def observation(stamp, x):
@@ -37,11 +41,11 @@ def test_first_frontier_reuses_seed_and_completes_after_stopped_detection(status
     progress = []
     calls = []
 
-    def approach(outcome, remaining, cancel, report, *, accept_path, motion_guard, initial_observation):
+    def approach(outcome, remaining, cancel, report, *, motion_guard, initial_observation, accept_path=None):
         assert initial_observation is seed
         calls.append(outcome["goal_xy"])
         assert outcome["observation"]["stamp_ns"] == 100
-        assert callable(accept_path)
+        assert accept_path is None
         report({"status": "tracking"})
         return {"status": "arrived"}
 
@@ -67,7 +71,7 @@ def test_first_frontier_reuses_seed_and_completes_after_stopped_detection(status
     ]
 
 
-def test_timed_out_frontier_is_cooled_and_alternate_is_selected(monkeypatch):
+def test_timed_out_frontier_is_skipped_and_alternate_is_selected(monkeypatch):
     import pytest
 
     from dimos.vln_task.search import memory_exploration
@@ -98,7 +102,7 @@ def test_timed_out_frontier_is_cooled_and_alternate_is_selected(monkeypatch):
     step.record_detection(stopped, {"status": "not_visible"})
 
     assert calls == [first.xy, second.xy]
-    assert step.cooling[first.frontier_xy] > time.monotonic()
+    assert step.planner.failed == [first.frontier_xy]
     assert step.planner.explored == []
 
 

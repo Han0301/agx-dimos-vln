@@ -27,6 +27,14 @@ def run_profile(name, args, parser, stack=None):
         return 0
     if name != "web_input" and not args.goal:
         parser.error("vln_task requires --goal")
+    if name == "web_input":
+        from logging.config import dictConfig
+
+        import uvicorn
+        from uvicorn.config import LOGGING_CONFIG
+
+        # Uvicorn's default logging setup closes existing handlers, including the recorder.
+        dictConfig(LOGGING_CONFIG)
     if stack is not None:
         from dimos.plugins.runtime_log import capture
 
@@ -63,8 +71,6 @@ def run_profile(name, args, parser, stack=None):
     if exploration_memory:
         runner = partial(runner, exploration_memory=True)
     if name == "web_input":
-        import uvicorn
-
         from dimos.plugins.runtime_log import task_console
         from dimos.vln_task.web import create_app
         from dimos.plugins.web_input.session import WebSession
@@ -79,6 +85,7 @@ def run_profile(name, args, parser, stack=None):
                 port=web["port"],
                 workers=1,
                 timeout_graceful_shutdown=2,
+                log_config=None,
             )
         return 0
     with runner() as task:

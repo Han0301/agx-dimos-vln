@@ -37,10 +37,14 @@ bash sh/start_log.sh --mode live
 
 ## 空间记忆复查
 
-先用原命令启动记录器，再启动带 `--exploration-memory` 的 VLN。归档的 `spatial_memory/<本次运行>/images/` 保存实际入库的 RGB JPEG，子进程诊断写入该运行目录的 `stderr.log`。记忆图片有独立的数量和容量上限，仍可通过 JSONL 看到超过限额后的采样结果。
+先启动 `bash sh/start_log.sh --mode live`，再启动 `bash sh/start_vln_motion.sh`。归档的 `spatial_memory/<本次运行>/images/` 保存实际入库的 RGB JPEG，子进程诊断写入同一运行目录的 `stderr.log`。记忆图片有独立的数量和容量上限。即使 JPEG 未归档，`simple_memory_sample` 仍记录入库结果和 `image_outcome`。
 
-- 先在 `web_input/<本次运行>/modules/` 按 `task_id` 查 `simple_memory_sample`，确认位姿、观测时间戳、采样结果、跳过原因和 JPEG 路径。采样和查询由 `spatial_memory.jsonl` 记录，上层提前跳过的情况在 `vln_task.jsonl`。
-- 用 `memory_lookup_id` 关联 `simple_memory_lookup` 和 `active_search.jsonl` 中的 `memory_candidate_checked`。候选日志记录排名、相似度和未选原因。用 `memory_id` 回查入库时的 JPEG，用 `leg_id` 接着查导航与停稳复检。
+- 在 `web_input/<本次运行>/modules/` 按 `task_id` 查 `spatial_memory.jsonl`。`simple_memory_sample_started` 和 `simple_memory_sample` 记录观测、位姿、采样判定与 JPEG 路径。上层提前跳过的情况在 `vln_task.jsonl`。
+- 用 `memory_lookup_id` 把 `simple_memory_lookup` 的实际查询文本、候选排名、相似度和位姿与 `active_search.jsonl` 的候选筛选关联起来。带参考图的任务用原始目标描述查记忆。`simple_memory_worker` 提供子进程的状态和 stderr 路径。按 `memory_request_id` 找 stderr 中的请求起止，核对期间的 CLIP 或向量库错误。
+- 用 `memory_id` 回查历史 JPEG，用 `leg_id` 查回访运动和停稳观测。`memory_recall_result` 记录新观测的复检状态，区分已定位、继续探索和复检异常。最终是否到达接近点以 `navigation_tool_finished` 为准。
+
+- 并行检测查 `vln_task.jsonl` 的 `parallel_detection_started` 与 `parallel_detection_finished`。用 `observation_id` 找检测帧，用 `memory_lookup_id` 串起记忆检索、候选筛选和回访。决策字段区分视觉优先、有记忆候选、无候选和超时。网页阶段 `memory_fallback_frontier` 表示回访未取得新视角。
+- 后台采样查 `simple_memory_sample` 的 `sampling_source=background`、源时间戳、位移、航向变化和入库结果。发生超时可查 `background_memory_timeout`。
 
 ## 回放诊断
 
@@ -48,8 +52,9 @@ bash sh/start_log.sh --mode live
 
 - 感知复现查 `observation_id` 和 `det_id`。观测附带配对时间戳、相机标定、位姿和深度缩放，`detection_result` 记录候选框 `bbox_2d`、相机外参和原始回包附件路径 `vlm_response_artifact`。
 - VLM 实际输入查 `modules/vlm.jsonl` 的 `vlm_call_finished`，按 `call_id` 打开 `input_image_artifact`。附件保存 HTTP 转码或 DashScope 最终重压缩后的 JPEG。若 `input_image_archive_status` 为 `not_queued`，查看附件配额和写入状态。
-- 探索和避障查 `frontier_selection`、`lidar_costmap_update`、`tracker_costmap_accepted`、`tracker_costmap_rejected` 和 `tracker_collision_veto`。阻挡事件附带来源、命中位置和判定阈值。
+- 探索先查 `first_detection_branch`，再按 `leg_id` 查选点、运动、停稳观测和 `exploration_leg_finished`。前沿筛选查 `frontier_selection`。定向靠近查 `exploration_goal_selected`、`xnavdp_trajectory` 和 `tracker_command_sample`。前沿与记忆回访也可按规划请求时间戳关联轨迹和 tracker 速度。原地扫视按 `sweep_step` 区分各次转向。整轮退出查 `search_finished`。避障查 `lidar_costmap_update`、`tracker_costmap_accepted`、`tracker_costmap_rejected` 和 `tracker_collision_veto`。阻挡事件附带来源、命中位置和判定阈值。
 - 运动复现按 `request_stamp_ns` 查 XNavDP 轨迹和 `tracker_mpc_ready`。逐条速度查 `tracker_command_sample` 和 `body_command_sample`，用同主机单调时钟对齐；底盘收到的 `Twist` 无任务或请求 ID。
+- `tracker_command_sample` 的 `collision_check` 记录原速度提案使用的 `cost_threshold`。扫过代价图时，`costmap_max_checked_cost` 记录已检查足迹内的最高格代价，全为未知时是 `-1`。若另试纯旋转，检查详情在 `rotation_check`。结合 `costmap_stamp_ns`、`reason` 和 `published` 核对地图版本、判定结果和是否发布。拦截后重新发布非零跟踪或扫视速度时，`tracker_collision_recovered` 关联前次阻挡原因和规划请求。底盘是否移动需对照里程计。
 - 运行复查查 `run.json` 的脱敏生效配置、代码提交与工作区状态。Simple 本地 CLIP 文件记录大小、修改时间和首尾采样摘要。Web 任务失败记录脱敏错误内容与调用栈。
 
 ## 按任务排查

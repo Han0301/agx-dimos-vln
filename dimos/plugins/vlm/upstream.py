@@ -2,6 +2,7 @@
 
 import base64
 import json
+import logging
 import threading
 import time
 
@@ -60,6 +61,13 @@ def _wait_for(connection, deadline, kind):
         pass
 
 
+logger = logging.getLogger(__name__)
+
+
+class VLMConnectionError(RuntimeError):
+    """A transient failure before sending the inference input."""
+
+
 class OmniClient:
     def __init__(self, model, websocket_url, api_key, timeout_s):
         self.model = model
@@ -92,13 +100,29 @@ class OmniClient:
         timing["queue"] = start - queued
         connection = None
         try:
-            connection = websocket.create_connection(
-                self._url,
-                header=["Authorization: Bearer " + self._api_key],
-                timeout=_remaining(deadline),
-            )
+            for attempt in (1, 2):
+                phase = "connect"
+                connection_deadline = min(deadline, time.monotonic() + 5.0) if attempt == 1 else deadline
+                try:
+                    connection = websocket.create_connection(
+                        self._url,
+                        header=["Authorization: Bearer " + self._api_key],
+                        timeout=_remaining(connection_deadline),
+                    )
+                    phase = "session_created"
+                    _wait_for(connection, connection_deadline, "session.created")
+                    break
+                except (websocket.WebSocketTimeoutException, websocket.WebSocketConnectionClosedException,
+                        ConnectionError, TimeoutError) as exc:
+                    logger.warning("VLM connection failed phase=%s attempt=%d error_type=%s",
+                                   phase, attempt, type(exc).__name__)
+                    if attempt == 2 or deadline - time.monotonic() <= 0.2:
+                        raise VLMConnectionError("VLM upstream connection unavailable") from None
+                    if connection is not None:
+                        connection.shutdown()
+                        connection = None
+                    time.sleep(0.2)
             self._connected = True
-            _wait_for(connection, deadline, "session.created")
             connected = time.monotonic()
             timing["upstream_connect"] = connected - start
 

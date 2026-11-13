@@ -19,6 +19,7 @@ class MemoryArchive:
         self.writer = None
         self.count = 0
         self.size = 0
+        self.unavailable = False
         try:
             run = create_run("spatial_memory")
             if run is not None:
@@ -28,11 +29,18 @@ class MemoryArchive:
                     report=self._report,
                 )
         except (OSError, RuntimeError, ValueError) as exc:
-            event(logger, "simple_memory_archive_unavailable", reason=str(exc))
+            self.unavailable = True
+            event(logger, "simple_memory_archive_unavailable", reason="archive_init_failed",
+                  error_type=type(exc).__name__)
+
+    def relative_path(self, relative):
+        if self.run is None:
+            return None
+        return (self.run / relative).relative_to(self.run.parent.parent).as_posix()
 
     def offer(self, memory_id, jpeg):
         if self.writer is None:
-            return None, "archive_unavailable" if self.run else "recording_off"
+            return None, "archive_unavailable" if self.unavailable else "recording_off"
         if not isinstance(memory_id, str) or not _IMAGE_ID.fullmatch(memory_id):
             return None, "invalid_memory_id"
         size = len(jpeg)
@@ -45,7 +53,7 @@ class MemoryArchive:
             return None, "archive_queue_full"
         self.count += 1
         self.size += size
-        return (self.run / relative).relative_to(self.run.parent.parent).as_posix(), "queued"
+        return self.relative_path(relative), "queued"
 
     def _write(self, item):
         relative, data = item

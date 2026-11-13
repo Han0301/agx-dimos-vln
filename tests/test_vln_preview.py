@@ -9,12 +9,14 @@ import pytest
 from PIL import Image
 
 
-def test_geometry_uses_frozen_capture_and_explicit_coordinates():
+@pytest.mark.parametrize("depth_m", [2.0, 6.0, 6.01])
+def test_geometry_uses_frozen_capture_and_explicit_coordinates(depth_m):
+    from dimos.vln_task.perception import TargetDepthError
     from dimos.vln_task.preview import parse_detection, target_and_goal
 
     frame = NS(
         k=[100.0, 0.0, 50.0, 0.0, 100.0, 50.0, 0.0, 0.0, 1.0],
-        depth=np.full((100, 100), 2.0),
+        depth=np.full((100, 100), depth_m),
         distortion_model="",
         distortion=(),
         odom=NS(
@@ -27,12 +29,15 @@ def test_geometry_uses_frozen_capture_and_explicit_coordinates():
     box = parse_detection('```json\n{"name":"bin","bbox":[400,400,600,600]}\n```')
     assert box == (400., 400., 600., 600.)
     assert all(type(value) is float for value in box)
-    target, goal, depth = target_and_goal(
-        frame, box, {"translation": [0.0, 0.0, 0.0], "pitch": 0.0}, 0.6
-    )
-    assert target == pytest.approx([3.0, 2.0, 0.0])
-    assert goal == pytest.approx([2.4, 2.0])
-    assert depth == 2
+    camera = {"translation": [0.0, 0.0, 0.0], "pitch": 0.0}
+    if depth_m == 6.01:
+        with pytest.raises(TargetDepthError, match="outside the 6 m localization range"):
+            target_and_goal(frame, box, camera, 0.6)
+        return
+    target, goal, depth = target_and_goal(frame, box, camera, 0.6)
+    assert target == pytest.approx([1.0 + depth_m, 2.0, 0.0])
+    assert goal == pytest.approx([1.0 + depth_m - 0.6, 2.0])
+    assert depth == depth_m
     assert parse_detection("None") is None
     assert parse_detection('{"name":"bin","bbox_3d":[1,2,3]}') is None
 

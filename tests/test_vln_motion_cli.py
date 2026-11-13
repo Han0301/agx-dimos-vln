@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -56,6 +57,50 @@ def test_web_rejects_inconsistent_motion_config(args, message):
     assert result.returncode != 0
     assert message in result.stderr
     assert not result.stdout
+
+
+def test_web_motion_records_structured_events_after_uvicorn_startup(tmp_path):
+    script = """
+import logging
+import sys
+from contextlib import nullcontext
+from unittest.mock import patch
+
+from dimos.plugins._agent_cli import main
+from dimos.plugins.runtime_log import event
+
+
+def run_without_socket(server):
+    server.started = True
+    logging.getLogger("uvicorn.error").info("startup probe")
+    access = logging.getLogger("uvicorn.access")
+    access.info('%s - "%s %s HTTP/%s" %d', "local", "GET", "/status", "1.1", 200)
+    access.info('%s - "%s %s HTTP/%s" %d', "local", "POST", "/navigate", "1.1", 202)
+    event(logging.getLogger("dimos.plugins.path_tracker"), "collision_veto", reason="map")
+
+
+with patch("uvicorn.Server.run", run_without_socket), patch(
+    "dimos.plugins.web_input.session.WebSession", nullcontext,
+):
+    raise SystemExit(main("web_input"))
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script, "--profile", PROFILE, "--motion-tracker-config", TRACKER],
+        cwd=ROOT,
+        env={**os.environ, "DIMOS_LOG_ROOT": str(tmp_path)},
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    (run,) = (tmp_path / "web_input").iterdir()
+    (entry,) = (run / "modules/path_tracker.jsonl").read_text().splitlines()
+    assert json.loads(entry)["reason"] == "map"
+    assert "startup probe" in result.stderr
+    assert '"POST /navigate HTTP/1.1" 202 Accepted' in result.stdout
+    assert "GET /status" not in result.stdout
+    assert "startup probe" in (run / "stderr.log").read_text()
+    assert '"POST /navigate HTTP/1.1" 202 Accepted' in (run / "stdout.log").read_text()
 
 
 def test_task_console_shows_events_and_hides_successful_status_polls(capsys):

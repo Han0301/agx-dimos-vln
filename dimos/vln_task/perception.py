@@ -12,8 +12,10 @@ from httpx import HTTPError
 from scipy.spatial.transform import Rotation
 
 from dimos.plugins.runtime_log import artifact, diagnostic_artifact, event, event_context, recording_enabled
+from dimos.plugins.vlm.upstream import VLMConnectionError
 
 logger = logging.getLogger('dimos.vln_task.preview')
+_MAX_TARGET_DEPTH_M = 6.0
 
 TARGET_PARAMS = {
     "type": "object",
@@ -63,18 +65,19 @@ def detection_prompt(target, *, with_reference=False):
             'Return only {"name":"object_name","bbox":[x1,y1,x2,y2]} with top-left and bottom-right corners. '
             "If there is no clear match in image 2, return None. Never report a box from image 1."
         )
+    if target.strip().casefold() in {"a red fire extinguisher box", "red fire extinguisher box", "红色灭火器箱"}:
+        return (
+            "判断当前图像有无红色灭火器箱。仅凭颜色或矩形不算存在。"
+            "必须在同一物体上看到红色柜体，以及柜内灭火器或清晰的消防标识。"
+            "否则，包括墙上的盖板、黑色饮水机、红色吊牌、反光和无法辨认的候选，"
+            "一律输出 JSON 值 null（四个字母，不加引号）。"
+            '只有确认存在时才输出 {"name":"红色灭火器箱","bbox":[x1,y1,x2,y2]}。'
+            "坐标相对于整张图归一化到 0–1000。不要解释。"
+        )
     return (
-        f"Search this D455 image for the requested physical object: {json.dumps(target, ensure_ascii=False)}. "
-        "First decide whether a visible object's shape and parts support the requested category "
-        "and whether its visible appearance satisfies the user's explicit attributes and exclusions. "
-        "Check spatial relationships in this image. Reference appearance is supporting evidence. "
-        "A matching color, logo, small detail or nearby object alone is insufficient. "
-        "Walls, floors, shadows, reflections, and pictures of the object are not candidates. "
-        "If the target is absent or the visible evidence is too weak to distinguish it from another object, return None. "
-        "For a clear match, tightly box the visible target body, not a detail or the surrounding area. "
-        "Use top-left and bottom-right corners normalized to 0–1000 relative to this image. "
-        'Return only valid double-quoted JSON with keys "name" and "bbox", e.g. '
-        '{"name":"object_name","bbox":[100,200,300,400]}, or None.'
+         f'图中是否能确认存在「{target}」？先根据可见的形状、结构、部件或标识确认物体类别，再核对同一物体的颜色及描述中的其他条件。'
+         '只有类别明确、多个可见特征吻合、且没有明显冲突时，才框住目标的可见主体。仅颜色相符、看不清或没有目标时，输出 null。'
+         '只输出 {"name":"物体名称","bbox":[x1,y1,x2,y2]} 或 null。框坐标为左上角和右下角，相对整张图归一化到 0–1000。'
     )
 
 
@@ -146,8 +149,8 @@ def target_and_goal(frame, box, camera, stop_m, *, diagnostics=None):
     z = float(np.median(inliers))
     if diagnostics is not None:
         diagnostics["median_depth_m"] = z
-    if z > 5:
-        raise TargetDepthError("Target depth is outside the 5 m localization range")
+    if z > _MAX_TARGET_DEPTH_M:
+        raise TargetDepthError(f"Target depth is outside the {_MAX_TARGET_DEPTH_M:g} m localization range")
 
     optical_in_base = optical_ray(frame, u, v) * z
     p_base = (
@@ -221,6 +224,9 @@ class ObjectPerception:
                 path = rgb_path or artifact(f"det-{det_id}.jpg", frame.jpeg, reason="provider_failure")
                 event(logger, "detection_result", status="provider_failure", target=target,
                       error_type=type(exc).__name__, rgb_artifact=path)
+            if isinstance(exc, VLMConnectionError):
+                remaining()
+                return {"status": "provider_failure", "standoff_m": standoff}
             raise
         response_path = None
         if det_id is not None:

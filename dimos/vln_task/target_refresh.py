@@ -10,7 +10,7 @@ from .agent import TaskCancelled
 from .observation import TRACKING_MAX_AGE_S
 
 logger = logging.getLogger("dimos.vln_task.approach")
-_MAX_REFRESH_DISTANCE_M = 1.0
+_MAX_REFRESH_DISTANCE_M = 1.25
 
 
 class TargetRefresh:

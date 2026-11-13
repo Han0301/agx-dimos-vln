@@ -4,7 +4,6 @@ import logging
 import math
 import threading
 import time
-from functools import partial
 from types import SimpleNamespace
 
 import numpy as np
@@ -13,7 +12,7 @@ from scipy.spatial.transform import Rotation
 from dimos.plugins.path_tracker.messages import odom_pose
 from dimos.plugins.path_tracker.tracker import TURN_TOLERANCE_RAD
 from dimos.plugins._agent_common import TaskCancelled
-from dimos.plugins.runtime_log import event
+from dimos.plugins.runtime_log import event, recording_enabled
 from dimos.vln_task.observation import TRACKING_MAX_AGE_S
 from dimos.vln_task.perception import optical_ray
 from dimos.plugins.xnavdp.client import stamp_ns
@@ -21,6 +20,8 @@ from dimos.plugins.xnavdp.client import stamp_ns
 from .search import ExplorationUnavailable
 
 logger = logging.getLogger('dimos.plugins.active_search.exploration')
+_DIRECTED_STEP_M = 2.0
+_DIRECTED_MOTION_WINDOW_S = 6.0
 
 
 def observe_stopped(observe, newest_stamp, previous_stamp, remaining, settle_s, **options):
@@ -30,6 +31,23 @@ def observe_stopped(observe, newest_stamp, previous_stamp, remaining, settle_s, 
     return observe(
         remaining, after_stamp_ns=after_stamp, received_after=settled_at,
         max_age_s=TRACKING_MAX_AGE_S, **options,
+    )
+
+
+def _log_leg_error(leg, phase, exc, started, **fields):
+    if started is None:
+        return
+    if isinstance(exc, ExplorationUnavailable):
+        reason = str(exc)
+    elif isinstance(exc, TaskCancelled):
+        reason = "task_cancelled"
+    elif isinstance(exc, TimeoutError):
+        reason = "no_new_view" if phase == "stopped_observation" else "timeout"
+    else:
+        reason = type(exc).__name__
+    event(
+        logger, "exploration_leg_finished", **leg, reason=reason, phase=phase,
+        error_type=type(exc).__name__, elapsed_ms=(time.monotonic() - started) * 1000, **fields,
     )
 
 
@@ -101,34 +119,38 @@ class ExplorationCloud:
 
 
 class RotationSweep:
-    """Sample five headings spaced 60 degrees from the first observation."""
+    """Sample four headings spaced 75 degrees from the first observation."""
 
     def __init__(
         self, observe, newest_stamp, turn, first, cancel, *, settle_s=0.15,
-        heading_offsets=range(60, 360, 60), leg=None,
+        heading_offsets=range(75, 360, 75), leg=None,
     ):
         self.observe = observe
         self.newest_stamp = newest_stamp
         self.turn = turn
         pose, self.world_frame = odom_pose(first.odom)
         self.initial_yaw = pose[2]
-        self.headings = iter(
+        self.headings = enumerate((
             math.remainder(self.initial_yaw + math.radians(angle), math.tau)
             for angle in heading_offsets
-        )
+        ), start=1)
         self.cancel = cancel
         self.settle_s = settle_s
         self.leg = leg or {"leg_kind": "rotation"}
 
     def __call__(self, previous, remaining, on_progress):
-        yaw = next(self.headings, None)
-        if yaw is None:
+        heading = next(self.headings, None)
+        if heading is None:
             return None
+        step, yaw = heading
+        started = time.monotonic() if recording_enabled() else None
         leg = {
             **self.leg, "source_stamp_ns": previous.stamp_ns,
-            "goal_yaw": yaw, "world_frame": self.world_frame,
+            "sweep_step": step, "goal_yaw": yaw, "world_frame": self.world_frame,
         }
-        event(logger, "exploration_leg_started", **leg)
+        event(logger, "exploration_leg_started", **leg,
+              observation_id=getattr(previous, "observation_id", None))
+
         def accept_odom(odom):
             pose, frame = odom_pose(odom)
             return frame == self.world_frame and abs(
@@ -147,19 +169,16 @@ class RotationSweep:
                 accept_odom=accept_odom,
             )
         except Exception as exc:
-            if isinstance(exc, ExplorationUnavailable):
-                reason = str(exc)
-            elif isinstance(exc, TaskCancelled):
-                reason = "task_cancelled"
-            elif isinstance(exc, TimeoutError):
-                reason = "no_new_view" if phase == "stopped_observation" else "timeout"
-            else:
-                reason = type(exc).__name__
-            event(logger, "exploration_leg_finished", **leg, reason=reason,
-                  phase=phase, error_type=type(exc).__name__)
+            _log_leg_error(leg, phase, exc, started)
             raise
-        event(logger, "exploration_leg_finished", **leg, reason="new_view",
-              stopped_stamp_ns=stopped.stamp_ns, observation_id=getattr(stopped, "observation_id", None))
+        if started is not None:
+            pose, _ = odom_pose(stopped.odom)
+            event(
+                logger, "exploration_leg_finished", **leg, reason="new_view", phase=phase,
+                stopped_stamp_ns=stopped.stamp_ns, observation_id=getattr(stopped, "observation_id", None),
+                end_odom=pose, heading_error_rad=math.remainder(yaw - pose[2], math.tau),
+                elapsed_ms=(time.monotonic() - started) * 1000,
+            )
         return stopped
 
 
@@ -206,30 +225,87 @@ class DirectedExploration:
             raise ExplorationUnavailable("no_valid_exploration_map")
         return grid, pose
 
-    def _accept_path(self, _, result, check, *, leg):
-        latest = self.observe(check, max_age_s=TRACKING_MAX_AGE_S)
-        grid, pose = self._map(latest)
-        if grid.frame != result.world_frame:
-            reason = "world_frame_mismatch"
-        else:
-            world_path = result.trajectory[0] @ result.pose[1].T + result.pose[0]
-            if self.planner.path_is_clear(
-                grid.grid, origin_xy=grid.origin_xy, resolution=grid.resolution,
-                robot_xy=pose[:2], path_xy=world_path[:, :2],
-            ):
-                return True
-            reason = "insufficient_clearance"
-        event(
-            logger, "exploration_path_rejected", **leg, reason=reason,
-            request_stamp_ns=getattr(result, "stamp_ns", None), grid_stamp_ns=grid.stamp_ns,
-            lidar_stamp_ns=self.lidar_stamp_ns, world_frame=grid.frame,
-        )
-        return False
-
     def toward_target(self, previous, detection, budget, camera):
         """Follow the image bearing briefly, then stop for a fresh detection."""
         leg = self._begin_leg("directed", previous)
-        started = time.monotonic()
+        started = time.monotonic() if recording_enabled() else None
+        try:
+            selected = self._bearing_goal(previous, detection, budget, camera, leg)
+        except Exception as exc:
+            _log_leg_error(leg, "bearing_selection", exc, started)
+            raise
+        if selected is None:
+            return None
+        goal, seed, previous_pose, world_frame = selected
+
+        deadline = time.monotonic() + self.leg_timeout_s
+        tracking = False
+
+        def progress(update):
+            nonlocal deadline, tracking
+            if update["status"] == "tracking" and not tracking:
+                tracking = True
+                deadline = time.monotonic() + _DIRECTED_MOTION_WINDOW_S
+
+        def leg_budget():
+            left = deadline - time.monotonic()
+            task_time = budget()
+            if left <= 0:
+                raise TimeoutError("Target bearing movement window ended")
+            return min(task_time, left)
+
+        motion_reason = None
+        try:
+            try:
+                result = self.approach(
+                    {
+                        "goal_xy": tuple(goal),
+                        "world_frame": world_frame,
+                        "observation": {"stamp_ns": seed.stamp_ns},
+                        "timing_ms": {},
+                        "exploration_leg": leg,
+                    },
+                    leg_budget, self.cancel, progress,
+                    motion_guard=self.cloud.ready if self.cloud is not None else None,
+                )
+                if started is not None and isinstance(result, dict):
+                    motion_reason = result.get("status")
+            except TimeoutError:
+                budget()
+                if started is not None:
+                    motion_reason = "motion_window_elapsed" if time.monotonic() >= deadline else "motion_timeout"
+        except Exception as exc:
+            _log_leg_error(leg, "motion", exc, started, tracking_started=tracking)
+            raise
+
+        if not tracking:
+            if started is not None:
+                event(logger, "exploration_leg_finished", **leg, reason="no_accepted_path",
+                      phase="motion", motion_reason=motion_reason,
+                      elapsed_ms=(time.monotonic() - started) * 1000)
+            return None
+        try:
+            stopped_frame = observe_stopped(
+                self.observe, self.newest_stamp, seed.stamp_ns, budget, self.settle_s,
+            )
+            stopped_pose, frame = odom_pose(stopped_frame.odom)
+            if frame != world_frame:
+                raise ExplorationUnavailable("exploration_frame_changed")
+        except Exception as exc:
+            _log_leg_error(leg, "stopped_observation", exc, started, motion_reason=motion_reason)
+            raise
+        if started is not None:
+            event(
+                logger, "exploration_leg_finished", **leg, reason="new_view",
+                phase="stopped_observation", motion_reason=motion_reason,
+                stopped_stamp_ns=stopped_frame.stamp_ns, end_odom=stopped_pose,
+                observation_id=getattr(stopped_frame, "observation_id", None),
+                displacement_m=math.dist(previous_pose[:2], stopped_pose[:2]),
+                elapsed_ms=(time.monotonic() - started) * 1000,
+            )
+        return stopped_frame
+
+    def _bearing_goal(self, previous, detection, budget, camera, leg):
         height, width = previous.depth.shape
         left, top, right, bottom = detection["bbox_2d"]
         u = (left + right) * width / 2000
@@ -239,80 +315,21 @@ class DirectedExploration:
         bearing = Rotation.from_quat([q.x, q.y, q.z, q.w]).apply(ray)[:2]
         length = np.linalg.norm(bearing)
         if not np.isfinite(length) or length < 1e-6 or ray[0] <= 0:
-            event(logger, "exploration_leg_finished", **leg, reason="invalid_bearing")
+            event(logger, "exploration_leg_finished", **leg, reason="invalid_bearing",
+                  phase="bearing_selection", bbox_2d=detection["bbox_2d"])
             return None
 
         previous_pose, world_frame = odom_pose(previous.odom)
         seed = self.observe(budget, max_age_s=TRACKING_MAX_AGE_S)
-        grid, pose = self._map(seed)
-        if grid.frame != world_frame:
+        pose, seed_frame = odom_pose(seed.odom)
+        if seed_frame != world_frame:
             raise ExplorationUnavailable("exploration_frame_changed")
-        origin = np.array(pose[:2])
-        for distance in (0.60, 0.45, 0.30):
-            goal = origin + distance * bearing / length
-            if self.planner.path_is_clear(
-                grid.grid, origin_xy=grid.origin_xy, resolution=grid.resolution,
-                robot_xy=pose[:2], path_xy=goal[None, :],
-            ):
-                break
-        else:
-            logger.info("No clear waypoint toward the target bearing")
-            event(logger, "exploration_leg_finished", **leg, reason="no_clear_waypoint",
-                  grid_stamp_ns=grid.stamp_ns, lidar_stamp_ns=self.lidar_stamp_ns)
-            return None
+        goal = np.array(pose[:2]) + _DIRECTED_STEP_M * bearing / length
         event(
             logger, "exploration_goal_selected", **leg, goal_xy=goal.tolist(),
-            world_frame=world_frame, start_odom=pose, grid_stamp_ns=grid.stamp_ns,
+            world_frame=world_frame, start_odom=pose, source_stamp_ns=seed.stamp_ns,
             observation_id=getattr(seed, "observation_id", None),
-            lidar_stamp_ns=self.lidar_stamp_ns, bbox_2d=detection["bbox_2d"],
-            distance_m=distance,
+            bbox_2d=detection["bbox_2d"], distance_m=_DIRECTED_STEP_M,
         )
 
-        deadline = time.monotonic() + self.leg_timeout_s
-        tracking = False
-
-        def progress(update):
-            nonlocal deadline, tracking
-            if update["status"] == "tracking" and not tracking:
-                tracking = True
-                deadline = time.monotonic() + 2.0
-
-        def leg_budget():
-            left = deadline - time.monotonic()
-            task_time = budget()
-            if left <= 0:
-                raise TimeoutError("Target bearing movement window ended")
-            return min(task_time, left)
-
-        try:
-            self.approach(
-                {
-                    "goal_xy": tuple(goal),
-                    "world_frame": world_frame,
-                    "observation": {"stamp_ns": seed.stamp_ns},
-                    "timing_ms": {},
-                    "exploration_leg": leg,
-                },
-                leg_budget, self.cancel, progress, accept_path=partial(self._accept_path, leg=leg),
-                motion_guard=self.cloud.ready if self.cloud is not None else None,
-            )
-        except TimeoutError:
-            budget()
-
-        if not tracking:
-            event(logger, "exploration_leg_finished", **leg, reason="no_accepted_path",
-                  elapsed_ms=(time.monotonic() - started) * 1000)
-            return None
-        stopped_frame = observe_stopped(
-            self.observe, self.newest_stamp, seed.stamp_ns, budget, self.settle_s,
-        )
-        stopped_pose, frame = odom_pose(stopped_frame.odom)
-        if frame != world_frame:
-            raise ExplorationUnavailable("exploration_frame_changed")
-        event(
-            logger, "exploration_leg_finished", **leg, reason="new_view",
-            stopped_stamp_ns=stopped_frame.stamp_ns, end_odom=stopped_pose,
-            displacement_m=math.dist(previous_pose[:2], stopped_pose[:2]),
-            elapsed_ms=(time.monotonic() - started) * 1000,
-        )
-        return stopped_frame
+        return goal, seed, previous_pose, world_frame

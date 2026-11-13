@@ -2,24 +2,30 @@
 
 import math
 import time
+import threading
 from contextlib import contextmanager, nullcontext
-from functools import partial
 from uuid import uuid4
 
 from dimos.plugins._agent_common import TaskCancelled
 from dimos.plugins.path_tracker.messages import odom_pose
+from dimos.plugins.path_tracker.tracker import GOAL_TOLERANCE_M, TURN_TOLERANCE_RAD
 from dimos.plugins.runtime_log import diagnostic_artifact, event, event_context, recording_enabled
 
 from ..observation import TRACKING_MAX_AGE_S
-from .exploration import DirectedExploration, logger, observe_stopped
-from .search import ExplorationUnavailable
+from .exploration import DirectedExploration, RotationSweep, logger, observe_stopped
+from .search import SEARCH_SEED_STATUSES, ExplorationUnavailable
 
+_QUERY_REQUIRED = object()
 _VIEW_MOTION_BUDGET_S = 15.0
 _MEMORY_QUERY_INTERVAL = 5
-_MEMORY_MIN_SIMILARITY = 0.35
+_MEMORY_MIN_SIMILARITY = 0.20
 _RECORDED_DETECTIONS = {
     "localized", "not_visible", "target_mismatch", "invalid_depth", "invalid_detection",
 }
+
+
+class _TargetDetected(Exception):
+    pass
 
 
 class MemoryExploration(DirectedExploration):
@@ -27,15 +33,18 @@ class MemoryExploration(DirectedExploration):
 
     def __init__(
         self, observe, newest_stamp, approach, mapper, planner, cancel, *,
-        turn, query_memory=None, visualization=None, cloud=None, settle_s=0.15,
+        turn, query_memory=None, prefetched_memory=None, visualization=None, cloud=None, settle_s=0.15,
     ):
         super().__init__(
             observe, newest_stamp, approach, mapper, planner, cancel,
             cloud=cloud, settle_s=settle_s,
         )
         self.query_memory = query_memory
+        self.prefetched_memory = prefetched_memory
+        self.start_motion_detection = None
+        self.motion_detection = None
         self.observed_poses = []
-        self.recalled_points = []
+        self.recalled_ids = set()
         self.checked_views = 0
         self.turn = turn
         self.visualization = visualization
@@ -43,33 +52,71 @@ class MemoryExploration(DirectedExploration):
         self.last_frontier_failure = None
         self.latest_map = None
         self.world_frame = None
-        self.cooling = {}
 
-    def run_search(self, search, target, budget, progress, frame, detection, *, camera):
+    def run_search(self, search, target, budget, progress, frame, detection, *, camera, memory_target=None, rotation_fallback=False, retry_view=None):
         recording = recording_enabled()
         started = time.monotonic() if recording else None
         next_query_at = 0
+        sweep = None
+        lookup_target = target if memory_target is None else memory_target
+
+        def recall(previous, remaining, on_progress, trigger):
+            if not recording:
+                return self._recall_view(lookup_target, previous, remaining, on_progress)
+            with event_context(memory_trigger=trigger):
+                return self._recall_view(lookup_target, previous, remaining, on_progress)
+
+        def recover_memory(previous, remaining, on_progress):
+            lookup_id, candidates = self.prefetched_memory(previous)
+            return recall_prefetched(previous, remaining, on_progress, lookup_id, candidates)
+
+        def recall_prefetched(previous, remaining, on_progress, lookup_id, candidates):
+            return self._recall_view(
+                lookup_target, previous, remaining, on_progress,
+                candidates=candidates, lookup_id=lookup_id,
+            )
 
         def next_view(previous, remaining, on_progress):
-            nonlocal next_query_at
+            nonlocal next_query_at, sweep
+            if self.prefetched_memory is not None:
+                lookup_id, candidates = self.prefetched_memory(previous)
+                view = recall_prefetched(previous, remaining, on_progress, lookup_id, candidates)
+                if view is not None:
+                    return view
+                if rotation_fallback:
+                    if sweep is None:
+                        sweep = RotationSweep(
+                            self.observe, self.newest_stamp, self.turn, previous, self.cancel,
+                            settle_s=self.settle_s,
+                        )
+                    self._report(on_progress, "exploring", memory_lookup_id=lookup_id)
+                    return sweep(previous, remaining, on_progress)
+                self._report(on_progress, "memory_fallback_frontier", memory_lookup_id=lookup_id)
+                return self(previous, remaining, on_progress)
             can_query = self.query_memory is not None
             queried = can_query and self.checked_views >= next_query_at
             if queried:
                 next_query_at = self.checked_views + _MEMORY_QUERY_INTERVAL
-                view = self._recall_view(target, previous, remaining, on_progress)
+                view = recall(previous, remaining, on_progress, "scheduled_lookup")
                 if view is not None:
                     return view
             view = self(previous, remaining, on_progress)
-            if view is not None or queried or not can_query:
+            if view is not None:
                 return view
+            if queried or not can_query:
+                if recording:
+                    event(logger, "memory_recall_skipped", memory_trigger="frontier_exhausted",
+                          reason="already_queried_this_view" if queried else "memory_not_configured",
+                          source_stamp_ns=previous.stamp_ns,
+                          observation_id=getattr(previous, "observation_id", None))
+                return None
             logger.info("No reachable frontier; checking remembered viewpoints")
             next_query_at = self.checked_views + _MEMORY_QUERY_INTERVAL
-            return self._recall_view(target, previous, remaining, on_progress)
+            return recall(previous, remaining, on_progress, "frontier_exhausted")
 
         def directed_view(previous, candidate, remaining):
             leg = {"leg_id": self.leg_id + 1, "leg_kind": "directed"}
-            with self._failed_leg(leg, "directed"):
-                view = self.toward_target(previous, candidate, remaining, camera)
+            view = self.toward_target(previous, candidate, remaining, camera)
             if view is not None:
                 self.pending_view = view.stamp_ns, None, leg
                 self._report(progress, "checking_exploration_view", **leg)
@@ -79,7 +126,9 @@ class MemoryExploration(DirectedExploration):
             return search(
                 target, budget, progress, next_view=next_view, initial_frame=frame,
                 initial_detection=detection, toward_target=directed_view,
-                on_detection=self.record_detection, exhausted_reason="no_reachable_frontier",
+                retry_view=retry_view, take_detection=self.take_motion_detection,
+                recover_memory=recover_memory if self.prefetched_memory is not None else None,
+                on_detection=self.record_detection, exhausted_reason="sweep_complete" if rotation_fallback else "no_reachable_frontier",
             )
         except Exception as exc:
             if not recording:
@@ -95,6 +144,12 @@ class MemoryExploration(DirectedExploration):
                     reason = "task_timeout"
                 except TaskCancelled:
                     reason = "task_cancelled"
+            if self.pending_view is not None:
+                stamp, _, leg = self.pending_view
+                if leg["leg_kind"] == "memory_recall":
+                    event(logger, "memory_recall_result", **leg, source_stamp_ns=stamp,
+                          phase="redetection", outcome="error", reason=reason,
+                          error_type=type(exc).__name__)
             event(
                 logger, "search_finished", outcome="cancelled" if reason == "task_cancelled" else "failed",
                 reason=reason, error_type=type(exc).__name__, last_leg_id=self.leg_id,
@@ -131,11 +186,7 @@ class MemoryExploration(DirectedExploration):
 
     def _show(self, grid, pose, goal=None):
         if self.visualization is not None:
-            now = time.monotonic()
-            self.visualization.update(
-                grid, pose, self.observed_poses, goal=goal,
-                cooling=tuple(point for point, until in self.cooling.items() if until > now),
-            )
+            self.visualization.update(grid, pose, self.observed_poses, goal=goal)
 
     def record_detection(self, frame, detection):
         self.checked_views += 1
@@ -154,6 +205,14 @@ class MemoryExploration(DirectedExploration):
             _, goal, leg = pending
             if recording:
                 fields.update(leg)
+                if leg["leg_kind"] == "memory_recall":
+                    outcome = "localized" if status == "localized" else "search_stopped"
+                    if status in SEARCH_SEED_STATUSES:
+                        outcome = "continue_search"
+                    event(logger, "memory_recall_result", **fields, phase="redetection",
+                          outcome=outcome,
+                          detection_reason=detection.get("detection_error"),
+                          target_xyz=detection.get("target_xyz"))
         if status not in _RECORDED_DETECTIONS:
             if recording:
                 event(logger, "exploration_view_skipped", **fields, reason="detection_not_usable")
@@ -176,7 +235,7 @@ class MemoryExploration(DirectedExploration):
                 observed_pose=pose, observed_views=len(self.observed_poses),
             )
 
-    def _refresh_map(self, seed, budget):
+    def _refresh_view(self, seed, budget):
         if (
             time.monotonic() - seed.received_at > TRACKING_MAX_AGE_S
             or getattr(self.mapper, "last_stamp", 0) > seed.stamp_ns
@@ -184,11 +243,15 @@ class MemoryExploration(DirectedExploration):
             seed = self.observe(
                 budget, after_stamp_ns=seed.stamp_ns, max_age_s=TRACKING_MAX_AGE_S,
             )
-        _, frame = odom_pose(seed.odom)
+        pose, frame = odom_pose(seed.odom)
         if self.world_frame is None:
             self.world_frame = frame
         elif self.world_frame != frame:
             raise ExplorationUnavailable("exploration_frame_changed")
+        return seed, pose, frame
+
+    def _refresh_map(self, seed, budget):
+        seed, _, _ = self._refresh_view(seed, budget)
         grid, pose = self._map(seed)
         self.latest_map = grid
         return seed, grid, pose
@@ -201,18 +264,7 @@ class MemoryExploration(DirectedExploration):
         while True:
             budget()
             seed, grid, pose = self._refresh_map(seed, budget)
-            now = time.monotonic()
-            self.cooling = {point: deadline for point, deadline in self.cooling.items() if deadline > now}
             recording = recording_enabled()
-            skipped = set() if recording else None
-
-            def allow_frontier(point):
-                if any(math.dist(point, failed) <= self.planner.explored_radius_m for failed in self.cooling):
-                    if skipped is not None:
-                        skipped.add(point)
-                    return False
-                return True
-
             report("selecting_frontier", leg_id=self.leg_id + 1)
             if recording:
                 grid_path = diagnostic_artifact(
@@ -233,11 +285,9 @@ class MemoryExploration(DirectedExploration):
             with log_context:
                 goal = self.planner.select(
                     grid.grid, origin_xy=grid.origin_xy, resolution=grid.resolution,
-                    robot_xy=pose[:2], allow_frontier=allow_frontier,
+                    robot_xy=pose[:2],
                 )
             self._show(grid, pose, goal)
-            if recording:
-                selection["skipped_cooldown"] = len(skipped)
             if goal is None:
                 if recording:
                     event(logger, "exploration_frontier_unavailable", **selection)
@@ -251,19 +301,18 @@ class MemoryExploration(DirectedExploration):
                 )
             report("planning_frontier", **fields)
             with self._failed_leg(fields, "motion"):
-                result, reason = self._move_to_view(seed, grid, goal.xy, leg, budget, report, fields)
+                result, reason = self._move_to_view(seed, grid.frame, goal.xy, leg, budget, report, fields)
 
             if result is not None and result["status"] == "arrived":
                 return self._capture_view(seed, budget, report, leg, fields, goal=goal)
 
-            retry_after = time.monotonic() + 10.0
-            self.cooling[goal.frontier_xy] = retry_after
+            self.planner.mark_failed(goal)
             self._show(grid, pose)
             self.last_frontier_failure = {"leg_id": leg["leg_id"], "reason": reason}
             report("frontier_cooldown", **fields, reason=reason)
             event(
                 logger, "exploration_leg_finished", **fields,
-                reason=reason, retry_after_monotonic_s=retry_after,
+                reason=reason,
             )
             seed = self.observe(
                 budget, after_stamp_ns=seed.stamp_ns, max_age_s=TRACKING_MAX_AGE_S,
@@ -285,34 +334,34 @@ class MemoryExploration(DirectedExploration):
         )
         return stopped
 
-    def _recall_view(self, target, previous, budget, on_progress):
+    def take_motion_detection(self, frame):
+        pending, self.motion_detection = self.motion_detection, None
+        if pending is not None and pending[0] is frame:
+            return pending[1]
+        return None
+
+    def _recall_view(self, target, previous, budget, on_progress, *, candidates=_QUERY_REQUIRED, lookup_id=None):
         def report(status, **fields):
             self._report(on_progress, status, **fields)
 
         recording = recording_enabled()
-        lookup_fields = {"memory_lookup_id": uuid4().hex} if recording else {}
-        report("checking_memory", **lookup_fields)
-        with event_context(**lookup_fields) if recording else nullcontext():
-            candidates = self.query_memory(target, budget)
+        lookup_fields = {"memory_lookup_id": lookup_id or uuid4().hex} if recording else {}
+        report("checking_memory" if candidates is _QUERY_REQUIRED else "checking_memory_result", **lookup_fields)
+        if candidates is _QUERY_REQUIRED:
+            with event_context(**lookup_fields) if recording else nullcontext():
+                candidates = self.query_memory(target, budget)
         if not candidates:
             if recording:
                 event(logger, "memory_recall_skipped", **lookup_fields, reason="no_candidates")
             return None
-        seed, grid, pose = self._refresh_map(previous, budget)
+        seed, pose, world_frame = self._refresh_view(previous, budget)
         for rank, hit in enumerate(candidates, 1):
             point = (hit.x, hit.y)
             distance = math.dist(point, pose[:2])
             if hit.similarity < _MEMORY_MIN_SIMILARITY:
                 reason = "below_similarity"
-            elif distance < 0.5:
-                reason = "near_current_pose"
-            elif any(math.dist(point, old) < 0.5 for old in self.recalled_points):
+            elif hit.memory_id in self.recalled_ids:
                 reason = "already_recalled"
-            elif not self.planner.path_is_clear(
-                grid.grid, origin_xy=grid.origin_xy, resolution=grid.resolution,
-                robot_xy=pose[:2], path_xy=(point,),
-            ):
-                reason = "insufficient_clearance"
             else:
                 reason = "selected"
             if recording:
@@ -320,7 +369,7 @@ class MemoryExploration(DirectedExploration):
                     logger, "memory_candidate_checked", **lookup_fields,
                     memory_id=hit.memory_id, rank=rank, similarity=hit.similarity,
                     goal_xy=point, goal_yaw=hit.yaw, distance_m=distance,
-                    grid_stamp_ns=grid.stamp_ns, world_frame=grid.frame, reason=reason,
+                    world_frame=world_frame, reason=reason,
                 )
             if reason == "selected":
                 break
@@ -330,7 +379,7 @@ class MemoryExploration(DirectedExploration):
                       reason="no_usable_viewpoint", candidates=len(candidates))
             return None
 
-        self.recalled_points.append(point)
+        self.recalled_ids.add(hit.memory_id)
         leg = {
             **self._begin_leg("memory_recall", seed),
             **lookup_fields, "memory_id": hit.memory_id,
@@ -338,10 +387,41 @@ class MemoryExploration(DirectedExploration):
         yaw = hit.yaw
         fields = {**leg, "goal_xy": point, "goal_yaw": yaw, "similarity": hit.similarity}
         if recording:
-            event(logger, "memory_goal_selected", **fields, world_frame=grid.frame, grid_stamp_ns=grid.stamp_ns)
+            event(logger, "memory_goal_selected", **fields, world_frame=world_frame)
+        if self.turn is not None and distance >= GOAL_TOLERANCE_M:
+            bearing = math.atan2(point[1] - pose[1], point[0] - pose[0])
+            if abs(math.remainder(bearing - pose[2], math.tau)) > TURN_TOLERANCE_RAD:
+                facing = {**fields, "travel_yaw": bearing}
+                report("facing_memory_goal", **facing)
+                with self._failed_leg(facing, "turn_before_motion"):
+                    turn_reason = self.turn(bearing, world_frame, budget)
+                    if turn_reason is not None:
+                        event(logger, "exploration_leg_finished", **facing,
+                              phase="turn_before_motion", reason=turn_reason)
+                        return None
+                    def accept_heading(odom):
+                        stopped_pose, frame = odom_pose(odom)
+                        error = math.remainder(bearing - stopped_pose[2], math.tau)
+                        return frame == world_frame and abs(error) <= TURN_TOLERANCE_RAD
+
+                    seed = observe_stopped(
+                        self.observe, self.newest_stamp, seed.stamp_ns, budget, self.settle_s,
+                        accept_odom=accept_heading,
+                    )
+                    stopped_pose, _ = odom_pose(seed.odom)
+                    event(logger, "memory_goal_heading_ready", **facing,
+                          source_stamp_ns=seed.stamp_ns, world_frame=world_frame,
+                          heading_error_rad=math.remainder(bearing - stopped_pose[2], math.tau),
+                          heading_tolerance_rad=TURN_TOLERANCE_RAD)
         report("planning_memory_goal", **fields)
         with self._failed_leg(fields, "motion"):
-            result, reason = self._move_to_view(seed, grid, point, leg, budget, report, fields)
+            result, reason = self._move_to_view(seed, world_frame, point, leg, budget, report, fields)
+        if reason == "target_detected":
+            detected_frame, _ = self.motion_detection
+            self.pending_view = detected_frame.stamp_ns, None, leg
+            event(logger, "exploration_leg_finished", **fields, reason=reason,
+                  observation_id=getattr(detected_frame, "observation_id", None))
+            return detected_frame
         if result is None or result["status"] != "arrived":
             event(logger, "exploration_leg_finished", **fields, reason=reason)
             return None
@@ -349,26 +429,36 @@ class MemoryExploration(DirectedExploration):
         if self.turn is not None:
             report("turning_memory_goal", **fields)
             with self._failed_leg(fields, "turn"):
-                turn_reason = self.turn(yaw, grid.frame, budget)
+                turn_reason = self.turn(yaw, world_frame, budget)
             if turn_reason is not None:
                 event(logger, "memory_heading_unavailable", **fields, reason=turn_reason)
         return self._capture_view(seed, budget, report, leg, fields)
 
-    def _move_to_view(self, seed, grid, point, leg, budget, report, fields):
+    def _move_to_view(self, seed, world_frame, point, leg, budget, report, fields):
         deadline = time.monotonic() + _VIEW_MOTION_BUDGET_S
         tracking = False
+        detection_stopped = threading.Event()
+        detection_future = None
         suffix = "memory_goal" if leg.get("leg_kind") == "memory_recall" else "frontier"
         stage = f"planning_{suffix}"
 
         def leg_budget():
             task_time = budget()
+            if detection_future is not None and detection_future.done():
+                match = detection_future.result()
+                if match is not None:
+                    self.motion_detection = match
+                    raise _TargetDetected
             left = deadline - time.monotonic()
             if left <= 0:
                 raise TimeoutError("Viewpoint movement window ended")
             return min(task_time, left)
 
         def motion_progress(update):
-            nonlocal stage, tracking
+            nonlocal stage, tracking, detection_future
+            if (update["status"] == "tracking" and suffix == "memory_goal"
+                    and self.start_motion_detection is not None and detection_future is None):
+                detection_future = self.start_motion_detection(seed, detection_stopped, deadline)
             next_stage = {
                 "tracking": f"tracking_{suffix}",
                 "replanning": f"replanning_{suffix}",
@@ -381,16 +471,21 @@ class MemoryExploration(DirectedExploration):
         try:
             result = self.approach(
                 {
-                    "goal_xy": point, "world_frame": grid.frame,
+                    "goal_xy": point, "world_frame": world_frame,
                     "observation": {"stamp_ns": seed.stamp_ns}, "timing_ms": {},
                     "exploration_leg": leg,
                 },
                 leg_budget, self.cancel, motion_progress,
                 initial_observation=seed,
-                accept_path=partial(self._accept_path, leg=leg),
                 motion_guard=self.cloud.ready if self.cloud is not None else None,
             )
+        except _TargetDetected:
+            return None, "target_detected"
         except TimeoutError:
             budget()
             return None, "tracking_timeout" if tracking else "no_accepted_path"
+        finally:
+            detection_stopped.set()
+            if detection_future is not None:
+                detection_future.cancel()
         return result, result["status"]

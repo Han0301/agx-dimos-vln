@@ -134,6 +134,8 @@ def collision_veto(
         costmap = guard._latest_costmap
     else:
         guard._latest_costmap = costmap
+    if details is not None:
+        details["cost_threshold"] = guard.cost_threshold
     x, y, yaw = odom
     samples = max(1, math.ceil(horizon_s / 0.1))
     dt = horizon_s / samples
@@ -146,6 +148,7 @@ def collision_veto(
         poses.append((x, y, yaw))
 
     if costmap is not None:
+        max_checked_cost = int(CostValues.UNKNOWN)
         low_x = costmap.origin.position.x
         low_y = costmap.origin.position.y
         high_x = low_x + costmap.width * costmap.resolution
@@ -165,16 +168,17 @@ def collision_veto(
                                 footprint_half_extents_m=(half_length, half_width),
                             )
                         return "map_bounds"
-            if (
-                guard._max_cost_in_obb(
-                    costmap, px, py, heading, half_length, half_width, details=details,
-                )
-                >= guard.cost_threshold
-            ):
+            cost = guard._max_cost_in_obb(
+                costmap, px, py, heading, half_length, half_width, details=details,
+            )
+            if details is not None:
+                max_checked_cost = max(cost, max_checked_cost)
+                details["costmap_max_checked_cost"] = max_checked_cost
+            if cost >= guard.cost_threshold:
                 if details is not None:
                     details.update(
                         sweep_step=step, sweep_pose=(px, py, heading),
-                        cost_threshold=guard.cost_threshold, map_resolution_m=costmap.resolution,
+                        map_resolution_m=costmap.resolution,
                         map_origin_xy=(low_x, low_y), footprint_half_extents_m=(half_length, half_width),
                     )
                 return "map"

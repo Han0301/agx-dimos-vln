@@ -51,7 +51,10 @@ def create_app(config, runner_factory, *, startup=None, health_details=None,
                 task["progress"] = dict(progress)
                 if progress.get("status") != previous.get("status"):
                     event(logger, "task_stage", stage=progress.get("status"),
-                          attempts=progress.get("attempts"), max_attempts=progress.get("max_attempts"))
+                          attempts=progress.get("attempts"), max_attempts=progress.get("max_attempts"),
+                          **{key: progress[key] for key in (
+                              "source_stamp_ns", "memory_lookup_id", "leg_id", "leg_kind", "reason",
+                          ) if key in progress})
 
     def worker(runner, loop):
         run_with_progress = getattr(runner, "run_with_progress", None)

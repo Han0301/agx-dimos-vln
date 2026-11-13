@@ -176,7 +176,7 @@ def test_find_object_prompt_requests_valid_json_with_normalized_coordinates():
     target = "黄色脚踏垃圾桶，位于绿植左侧"
     prompt = detection_prompt(target)
     assert target in prompt and "0–1000" in prompt
-    assert '{"name":"object_name","bbox":' in prompt
+    assert '{"name":"物体名称","bbox":' in prompt
 
 
 def test_independent_verification_prompt_defines_match_criteria():

@@ -269,7 +269,9 @@ class TaskAgent:
                 )
                 stop_options = {"stop_m": distance} if distance is not None else {}
                 target = args["target"]
+                search_options = stop_options
                 if tool_name == "find_object" and image is not None:
+                    search_options = {**stop_options, "memory_target": target}
                     target, appearance = self._reference_target(goal, target, image, remaining)
                     steps.append({"kind": "vlm", **appearance})
                 logger.info("tool started name=%s target=%r", tool_name, target)
@@ -283,7 +285,7 @@ class TaskAgent:
                 if tool_name in {"active_search", "find_object"}:
                     if tool_name == "find_object":
                         navigation = self.find_object(
-                            target, remaining, on_progress, cancel, **stop_options,
+                            target, remaining, on_progress, cancel, **search_options,
                         )
                     else:
                         navigation = self.active_search(
@@ -316,6 +318,9 @@ class TaskAgent:
                 )
                 steps.append({"kind": "navigation_preview", **navigation})
                 tool_count += 1
+                if navigation["status"] == "provider_failure":
+                    chinese = any("\u4e00" <= char <= "\u9fff" for char in goal)
+                    return finish("视觉服务暂不可用。" if chinese else "Vision service temporarily unavailable.")
                 if navigation["status"] == "arrived":
                     return finish("Arrived at the approach goal.")
                 if navigation["status"] == "search_exhausted" and (search or {}).get("reason") in {

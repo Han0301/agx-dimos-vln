@@ -25,7 +25,7 @@ class _Arrived(Exception):
 
 class ContinuousApproach(TargetRefresh):
     def __init__(
-        self, observe, plan, tracker, *, interval_s=0.5, plan_timeout_s=3.0,
+        self, observe, plan, tracker, *, interval_s=0.5, plan_timeout_s=4.0,
         detect=None, refresh_interval_s=1.5,
         last_request_stamp=None, arrival_condition=None,
     ):

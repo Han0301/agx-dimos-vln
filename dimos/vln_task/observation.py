@@ -39,6 +39,13 @@ class Observation:
     rgb_diagnostic_artifact: str | None = None
 
 
+@dataclass(frozen=True)
+class MemoryView:
+    jpeg: bytes
+    stamp_ns: int
+    odom: object
+
+
 class Observations:
     def __init__(self, node, settings, depth_scale, timeout):
         from geometry_msgs.msg import PoseStamped
@@ -152,6 +159,24 @@ class Observations:
               after_rgb_stamp_ns=after_stamp_ns, max_age_s=max_age_s,
               received_after_monotonic_s=received_after, reason=blocked_by, samples=samples,
               missing_topics=[topic for topic in (*self.frames, INFO_TOPIC) if topic not in samples])
+
+    def memory_view(self):
+        """Pair compressed RGB with nearby odometry without decoding depth."""
+        with self.cv:
+            now = time.monotonic()
+            rgb_frames, odom_frames = self.frames[RGB_TOPIC], self.frames[ODOM_TOPIC]
+            if not rgb_frames or not odom_frames:
+                return None
+            rgb_at, rgb = rgb_frames[-1]
+            if now - rgb_at > TRACKING_MAX_AGE_S:
+                return None
+            stamp = stamp_ns(rgb.header)
+            odom_at, odom = min(odom_frames, key=lambda item: abs(stamp_ns(item[1].header) - stamp))
+            gap = abs(stamp_ns(odom.header) - stamp)
+            if now - odom_at > TRACKING_MAX_AGE_S or gap > 150_000_000:
+                return None
+        return MemoryView(bytes(rgb.data), stamp, odom)
+
 
     def snapshot(
         self, remaining, *, after_stamp_ns=0, accept_odom=None, max_age_s=None, received_after=None,

@@ -114,7 +114,8 @@ def test_tracker_veto_archives_exact_costmap_and_rotation_fallback(tmp_path):
     )
 
     with capture("web_input", base=tmp_path) as run:
-        assert tracker.command() == (0.0, 0.1, "rotate_only")
+        details = {}
+        assert tracker.command(collision_details=details) == (0.0, 0.1, "rotate_only")
         assert tracker.command() == (0.0, 0.1, "rotate_only")
 
     veto, = records(run, "path_tracker", "tracker_collision_veto")
@@ -123,6 +124,56 @@ def test_tracker_veto_archives_exact_costmap_and_rotation_fallback(tmp_path):
     assert veto["blocking_cell_xy"] == [29, 22]
     assert veto["costmap_stamp_ns"] == 12
     assert (run / veto["costmap_path"]).read_bytes() == data.tobytes()
+    assert details["costmap_max_checked_cost"] == 73
+    assert details["rotation_check"]["costmap_max_checked_cost"] == 0
+
+
+def test_tracker_records_pass_veto_and_published_recovery(tmp_path):
+    config = load_config()
+    config["collision"]["cost_threshold"] = 80
+    tracker = Tracker(config, lambda *_: True, clock=lambda: 10.0)
+    tracker.running = True
+    tracker.update_odom((0.0, 0.0, 0.0), "world", stamp_ns=10)
+    tracker.update_depth(np.ones((10, 10)), stamp_ns=11)
+    tracker.plan = SimpleNamespace(
+        command=lambda *_: (0.4, 0.0), started=10.0, commands=[(0.4, 0.0)], dt=0.1,
+    )
+    origin = SimpleNamespace(position=SimpleNamespace(x=-1.0, y=-1.0))
+    info = SimpleNamespace(width=40, height=40, resolution=0.05, origin=origin)
+
+    with capture("web_input", base=tmp_path) as run:
+        for stamp, cost, request in ((12, 79, 100), (13, 80, 100), (14, 79, 101)):
+            if request == 101:
+                tracker._emit_command(0.0, 0.0, "expired", request_stamp_ns=100)
+            data = np.zeros((40, 40), dtype=np.int8)
+            data[22, 29] = cost
+            tracker.update_costmap(
+                OccupancyGrid(SimpleNamespace(info=info, data=data.ravel())), stamp_ns=stamp,
+            )
+            details = {}
+            tracker._emit_command(
+                *tracker.command(collision_details=details),
+                request_stamp_ns=request, collision_details=details,
+            )
+
+    first, blocked, expired, resumed = records(run, "path_tracker", "tracker_command_sample")
+    for sample, cost, stamp in ((first, 79, 12), (blocked, 80, 13), (resumed, 79, 14)):
+        assert sample["collision_check"]["cost_threshold"] == 80
+        assert sample["collision_check"]["costmap_max_checked_cost"] == cost
+        assert sample["costmap_stamp_ns"] == stamp
+        assert sample["published"] is True
+    assert [first["reason"], blocked["reason"], resumed["reason"]] == [
+        "tracking", "collision_map", "tracking",
+    ]
+    assert blocked["linear_x"] == 0.0
+    assert expired["reason"] == "expired"
+    assert "collision_check" not in expired
+    assert resumed["linear_x"] == 0.4
+    recovery, = records(run, "path_tracker", "tracker_collision_recovered")
+    assert recovery["previous_reason"] == "collision_map"
+    assert recovery["previous_request_stamp_ns"] == 100
+    assert recovery["request_stamp_ns"] == 101
+    assert recovery["costmap_stamp_ns"] == 14
 
 
 def test_lidar_costmap_logs_missing_odom_and_frame_mismatch(tmp_path):

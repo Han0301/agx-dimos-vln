@@ -130,8 +130,10 @@ def test_web_reference_image_guides_current_camera_search(backend, found, monkey
         connections.append(socket)
         return socket
 
-    def explore(description, remaining, progress, cancel, seed_frame, seed):
+    def explore(description, remaining, progress, cancel, seed_frame, seed, *, memory_target=None):
         assert seed_frame is frame
+        assert memory_target == target
+        assert appearance in description
         explorations.append(seed["status"])
         return seed
 

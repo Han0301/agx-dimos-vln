@@ -1,8 +1,13 @@
+import json
 import threading
 from types import SimpleNamespace as NS
 
 import numpy as np
 import pytest
+
+from dimos.plugins.runtime_log import capture
+
+from test_navigation_safety_logging import records
 
 
 def frame(stamp, x):
@@ -61,8 +66,13 @@ def test_current_frame_vlm_branch_precedes_independent_exploration(status):
         assert result["status"] == status
 
 
-@pytest.mark.parametrize("x, yaw_deg, expected_stamp", [(0.15, 0, 106), (0, 10, 106), (0, 0, 106)])
-def test_target_direction_rechecks_stopped_view_without_pose_threshold(monkeypatch, x, yaw_deg, expected_stamp):
+@pytest.mark.parametrize("x, yaw_deg, expected_stamp, motion_status", [
+    (0.15, 0, 106, None), (0, 10, 106, None), (0, 0, 106, None),
+    (0, 0, None, None), (0.15, 0, 106, "arrived"),
+])
+def test_target_direction_rechecks_stopped_view_without_pose_threshold(
+    monkeypatch, tmp_path, x, yaw_deg, expected_stamp, motion_status,
+):
     from dimos.plugins.active_search import exploration
 
     now = [0.]
@@ -78,21 +88,31 @@ def test_target_direction_rechecks_stopped_view_without_pose_threshold(monkeypat
         if "after_stamp_ns" in kwargs:
             assert stopped
             assert kwargs["after_stamp_ns"] == 105
+            if expected_stamp is None:
+                raise TimeoutError("no stopped frame")
             view = frame(106, x)
+            view.observation_id = "stopped-view"
             half_yaw = np.deg2rad(yaw_deg) / 2
             view.odom.pose.orientation.z = np.sin(half_yaw)
             view.odom.pose.orientation.w = np.cos(half_yaw)
             return view
         return frame(101, 0.)
 
-    def approach(outcome, remaining, cancel, on_progress, *, accept_path, motion_guard):
+    def approach(outcome, remaining, cancel, on_progress, *, motion_guard):
         nonlocal stopped
         x, y = outcome["goal_xy"]
         assert x > 0 and y < 0
+        assert remaining() == pytest.approx(7.)
         now[0] = 2.
         on_progress({"status": "tracking"})
-        assert remaining() == pytest.approx(2.)
-        now[0] += 2.
+        assert remaining() == pytest.approx(6.)
+        if motion_status is not None:
+            stopped = True
+            return {"status": motion_status}
+        now[0] += 1.
+        on_progress({"status": "tracking"})
+        assert remaining() == pytest.approx(5.)
+        now[0] += 5.
         try:
             remaining()
         finally:
@@ -102,30 +122,100 @@ def test_target_direction_rechecks_stopped_view_without_pose_threshold(monkeypat
         observe, lambda: 105, approach, Mapper(), Planner(),
         threading.Event(), settle_s=0,
     )
-    view = step.toward_target(
-        first, {"bbox_2d": [700, 400, 900, 600]}, lambda: 10, {"pitch": 0.},
-    )
-    assert getattr(view, "stamp_ns", None) == expected_stamp
+    detection = {"bbox_2d": [700, 400, 900, 600]}
+    with capture("web_input", base=tmp_path) as run:
+        if expected_stamp is None:
+            with pytest.raises(TimeoutError, match="no stopped frame"):
+                step.toward_target(first, detection, lambda: 10, {"pitch": 0.})
+        else:
+            view = step.toward_target(first, detection, lambda: 10, {"pitch": 0.})
+            assert view.stamp_ns == expected_stamp
+
+    outcome, = records(run, "active_search", "exploration_leg_finished")
+    assert outcome["leg_kind"] == "directed"
+    assert outcome["phase"] == "stopped_observation"
+    if expected_stamp is None:
+        assert outcome["reason"] == "no_new_view"
+    else:
+        assert outcome["reason"] == "new_view"
+        assert outcome["observation_id"] == "stopped-view"
+        assert outcome["motion_reason"] == (motion_status or "motion_window_elapsed")
 
 
-def test_blocked_target_direction_returns_without_motion():
-    from dimos.plugins.active_search.exploration import DirectedExploration
+@pytest.mark.parametrize("detour", [True, False])
+def test_directed_approach_submits_path_to_tracker(detour, monkeypatch, tmp_path):
+    from dimos.vln_task.approach import ContinuousApproach
+    from dimos.vln_task.search import exploration
+    from dimos.vln_task.search.frontier import FrontierPlanner
 
-    class BlockedPlanner(Planner):
-        def path_is_clear(self, grid, **kwargs):
-            return False
+    now = [0.0]
+    monkeypatch.setattr(exploration.time, "monotonic", lambda: now[0])
+    origin = np.array([-1.05, -1.05])
+    grid = np.zeros((30, 30), dtype=np.int8)
+    grid[13, 13] = 100
+    planner = FrontierPlanner()
+    assert all(not planner.path_is_clear(
+        grid, origin_xy=origin, resolution=0.1, robot_xy=(0.0, 0.0),
+        path_xy=[(distance, 0.0)],
+    ) for distance in (0.60, 0.45, 0.30))
 
-    def must_not_approach(*args, **kwargs):
-        pytest.fail("Motion requested toward a blocked target direction")
+    class SceneMapper(Mapper):
+        def snapshot(self, *, frame, require_cloud=False):
+            return NS(frame=frame, stamp_ns=self.stamp, grid=grid, origin_xy=origin, resolution=0.1)
+
+    class Tracker:
+        def __init__(self):
+            self.submitted = []
+
+        def reached(self, goal, world_frame):
+            return bool(self.submitted)
+
+        def submit(self, result):
+            self.submitted.append(result)
+            return True
+
+        def clear_plan(self, reason):
+            assert reason == "goal_reached"
+
+    requests = []
+    tracker = Tracker()
+
+    def plan(observation, goal, check, timing):
+        requests.append(goal)
+        assert goal == pytest.approx((2.0, 0.0))
+        points = [[0.0, -0.25, 0.0], [2.0, -0.25, 0.0]] if detour else [[0.30, 0.0, 0.0]]
+        path = [[*points, [2.0, 0.0, 0.0]]]
+        return json.dumps({
+            "status": "success", "request_stamp_ns": observation.stamp_ns,
+            "trajectory": path, "all_trajectory": [path], "all_values": [[0.8]],
+            "robot_pos": [0.0, 0.0, 0.0], "robot_quat": [0.0, 0.0, 0.0, 1.0],
+            "goal": goal, "trajectory_frame": "base_link", "goal_frame": "base_link",
+            "world_frame": "world",
+        }), 0.01, len(path[0])
+
+    def observe(check, **kwargs):
+        if "received_after" in kwargs:
+            assert tracker.submitted
+            return frame(104, 2.0)
+        view = frame(102 if "after_stamp_ns" in kwargs else (103 if requests else 101), 0.0)
+        view.received_at = now[0]
+        return view
 
     first = frame(100, 0.)
     first.depth = np.zeros((100, 100))
     first.k = [100., 0., 50., 0., 100., 50., 0., 0., 1.]
     first.distortion = []
-    step = DirectedExploration(
-        lambda *args, **kwargs: frame(101, 0.), lambda: 101,
-        must_not_approach, Mapper(), BlockedPlanner(), threading.Event(),
+    approach = ContinuousApproach(observe, plan, tracker, interval_s=0)
+    step = exploration.DirectedExploration(
+        observe, lambda: 103, approach, SceneMapper(), planner, threading.Event(),
     )
-    assert step.toward_target(
-        first, {"bbox_2d": [400, 400, 600, 600]}, lambda: 10, {"pitch": 0.},
-    ) is None
+    with capture("web_input", base=tmp_path) as run:
+        view = step.toward_target(
+            first, {"bbox_2d": [400, 400, 600, 600]}, lambda: 10, {"pitch": 0.},
+        )
+
+    assert len(requests) == 1
+    goal, = records(run, "active_search", "exploration_goal_selected")
+    assert goal["distance_m"] == 2.0
+    assert len(tracker.submitted) == 1
+    assert view.stamp_ns == 104

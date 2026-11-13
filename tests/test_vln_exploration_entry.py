@@ -46,7 +46,7 @@ def test_default_motion_check_enables_memory():
         ("tracking_frontier", "正在前往前沿航点"),
         ("waiting_exploration_view", "已结束移动，正在等待新观测"),
         ("checking_exploration_view", "已停稳，正在检测新视角"),
-        ("frontier_cooldown", "前沿暂时冷却，正在换点"),
+        ("frontier_cooldown", "前沿执行失败，正在换点"),
         ("exploration_lookaround", "无可达前沿，正在转向补看"),
     ],
 )

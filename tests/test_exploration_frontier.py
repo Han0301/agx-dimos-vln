@@ -71,3 +71,33 @@ def test_path_validation_checks_intermediate_footprint_and_unknown():
     assert planner.path_is_clear(
         grid, **options, path_xy=[(0.85, 2.15), (2.35, 2.15), (2.35, 1.15)]
     )
+
+
+def test_free_start_can_leave_when_nearby_unknown_reduces_clearance():
+    from dimos.plugins.active_search.frontier import FrontierPlanner
+
+    planner = FrontierPlanner()
+    grid = np.full((21, 22), 0, dtype=np.int8)
+    grid[:, 16:] = -1
+    grid[10, 2] = -1
+    pose = dict(origin_xy=(0, 0), resolution=0.1, robot_xy=(0.55, 1.05))
+    goal = planner.select(grid, **pose)
+
+    assert goal is not None
+    assert math.dist(goal.xy, pose["robot_xy"]) >= planner.min_goal_m - 1e-8
+    assert not planner.path_is_clear(grid, **pose, path_xy=[goal.xy])
+
+
+def test_frontier_selection_crosses_known_free_corridor_without_clearance():
+    from dimos.vln_task.search.frontier import FrontierPlanner
+
+    grid = np.full((9, 16), 100, dtype=np.int8)
+    grid[4, 2:12] = 0
+    grid[4, 12:] = -1
+    planner = FrontierPlanner()
+    pose = dict(origin_xy=(0, 0), resolution=0.1, robot_xy=(0.25, 0.45))
+    goal = planner.select(grid, **pose)
+
+    assert goal is not None
+    assert math.dist(goal.xy, (1.15, 0.45)) < 1e-8
+    assert not planner.path_is_clear(grid, **pose, path_xy=[goal.xy])

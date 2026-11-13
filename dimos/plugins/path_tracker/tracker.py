@@ -17,7 +17,7 @@ from .plan import MotionPlan
 log = logging.getLogger("dimos.path_tracker")
 ODOM_MAX_AGE_S = 0.5
 GOAL_TOLERANCE_M = 0.2
-TURN_TOLERANCE_RAD = math.radians(7)
+TURN_TOLERANCE_RAD = math.radians(10)
 
 @dataclass(frozen=True)
 class _PathTrace:
@@ -88,6 +88,7 @@ class Tracker:
         self.costmap_stamp_ns = None
         self._last_costmap_log = None
         self._last_collision_log = None
+        self._last_published_veto = None
         self.scan = None
         self.scan_received = 0.0
         self.scan_stamp_ns = None
@@ -231,6 +232,7 @@ class Tracker:
 
     def clear_plan(self, reason):
         with self.cv:
+            self._last_published_veto = None
             stamp = self.result.stamp_ns if self.result is not None else None
             trace = self._invalidate_plan(reason) or self.arrival_trace
             self._emit_command(0.0, 0.0, reason, request_stamp_ns=stamp, trace=trace)
@@ -263,7 +265,7 @@ class Tracker:
                 if self.turn_goal is goal:
                     self.clear_plan("exploration_turn_stopped")
 
-    def _turn_command(self):
+    def _turn_command(self, *, collision_details=None):
         yaw, frame = self.turn_goal
         if not self.running:
             return 0., 0., "tracker_stopped"
@@ -287,17 +289,18 @@ class Tracker:
                      math.hypot(self.guard.robot_length / 2, self.guard.robot_half_width))
         scan = self.scan if self.use_lidar else None
         recording = recording_enabled()
+        details = (collision_details if collision_details is not None else {}) if recording else None
         if scan is not None:
             near = np.sum(scan[:, :2] ** 2, axis=1) < radius ** 2
             if np.any(near):
                 if recording:
                     index = int(near.argmax())
-                    self._log_collision("lidar", "stop_turn", 0., angular, {
-                        "blocking_lidar_index": index, "blocking_lidar_base_xy": scan[index, :2].tolist(),
-                        "footprint_radius_m": radius, "footprint_centre_base_xy": (0., 0.),
-                    })
+                    details.update(
+                        blocking_lidar_index=index, blocking_lidar_base_xy=scan[index, :2].tolist(),
+                        footprint_radius_m=radius, footprint_centre_base_xy=(0., 0.),
+                    )
+                    self._log_collision("lidar", "stop_turn", 0., angular, details)
                 return 0., 0., "collision_lidar"
-        details = {} if recording else None
         blocked = collision_veto(
             self.guard, self.odom, self.costmap, scan, self.depth, 0., angular, details=details,
         )
@@ -400,6 +403,7 @@ class Tracker:
 
     def start(self):
         self.running = True
+        self._last_published_veto = None
         self.stopped.clear()
         self.threads = [
             threading.Thread(target=self._planning_loop, name="tracker-mpc"),
@@ -527,12 +531,12 @@ class Tracker:
                     event(log, "tracker_mpc_failed", **fields, error_type=type(exc).__name__,
                           reason=str(exc)[:300])
 
-    def command(self):
+    def command(self, *, collision_details=None):
         """Advance control while holding the condition lock."""
         if not self.running:
             return 0.0, 0.0, "idle"
         if self.turn_goal is not None:
-            return self._turn_command()
+            return self._turn_command(collision_details=collision_details)
         arrival = self._standoff_arrival()
         if arrival is not None:
             return 0.0, 0.0, arrival
@@ -568,7 +572,7 @@ class Tracker:
         if self.depth_timeout_s is not None and now - self.scan_received > 0.75:
             scan = None
         recording = recording_enabled()
-        details = {} if recording else None
+        details = (collision_details if collision_details is not None else {}) if recording else None
         blocked = collision_veto(
             self.guard, self.odom, self.costmap, scan, self.depth, v, w, details=details,
         )
@@ -587,6 +591,8 @@ class Tracker:
                 blocked, "rotate_only" if rotate_only else "stop", v, w, details,
                 rotation_blocked=rotation_blocked, rotation_details=rotation_details,
             )
+            if collision_details is not None and rotation_details is not None:
+                collision_details["rotation_check"] = rotation_details
         elif blocked is None and recording:
             self._last_collision_log = None
         if blocked is not None and not rotate_only:
@@ -647,7 +653,7 @@ class Tracker:
             "lidar_age_ms": (now - self.scan_received) * 1000 if self.scan is not None else None,
         }
 
-    def _emit_command(self, v, w, reason, *, request_stamp_ns=None, trace=None):
+    def _emit_command(self, v, w, reason, *, request_stamp_ns=None, trace=None, collision_details=None):
         trace = trace or self.turn_trace or self.active_trace or self.arrival_trace
         stamp = (
             getattr(trace, "request_stamp_ns", None) if trace is not None
@@ -669,11 +675,29 @@ class Tracker:
         if type(published) is not bool:
             published = None
         if recording:
+            costmap_stamp_ns = self.costmap_stamp_ns
+            check = {"collision_check": collision_details} if collision_details else {}
             event(
                 log, "tracker_command_sample", **fields, reason=reason, published=published,
                 dispatch_monotonic_ns=dispatch_ns, issued_monotonic_ns=time.monotonic_ns(),
-                linear_x=v, angular_z=w,
+                linear_x=v, angular_z=w, costmap_stamp_ns=costmap_stamp_ns, **check,
             )
+            previous = self._last_published_veto
+            if published and (reason.startswith("collision_") or reason == "rotate_only"):
+                self._last_published_veto = (fields, reason)
+            elif published and (v or w) and reason in {"tracking", "exploration_turn"} and previous:
+                self._last_published_veto = None
+                previous_fields, previous_reason = previous
+                if (
+                    previous_fields.get("task_id") == fields.get("task_id")
+                    and previous_fields.get("turn_generation") == fields.get("turn_generation")
+                ):
+                    event(
+                        log, "tracker_collision_recovered", **fields, reason=reason,
+                        previous_reason=previous_reason,
+                        previous_request_stamp_ns=previous_fields.get("request_stamp_ns"),
+                        linear_x=v, angular_z=w, costmap_stamp_ns=costmap_stamp_ns, **check,
+                    )
         state = (stamp, reason, published, bool(v or w))
         if state != self.last_velocity_state:
             self.last_velocity_state = state
@@ -696,7 +720,10 @@ class Tracker:
                     return
                 trace = self.turn_trace or self.active_trace or self.arrival_trace
                 try:
-                    self._emit_command(*self.command(), trace=trace)
+                    details = {} if recording_enabled() else None
+                    self._emit_command(
+                        *self.command(collision_details=details), trace=trace, collision_details=details,
+                    )
                 except Exception:
                     log.exception(
                         "control tick failed request_stamp_ns=%s",

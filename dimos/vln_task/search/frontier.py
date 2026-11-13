@@ -133,7 +133,10 @@ class FrontierPlanner:
                 )
 
         try:
-            free, safe, cells = self._masks(grid, resolution)
+            grid = np.asarray(grid)
+            if grid.ndim != 2 or not grid.size or not math.isfinite(resolution) or resolution <= 0:
+                raise ValueError("invalid frontier grid or resolution")
+            free = (grid >= 0) & (grid < 50)
         except ValueError:
             if rejections is not None and math.isfinite(resolution):
                 report("invalid_grid")
@@ -144,7 +147,7 @@ class FrontierPlanner:
                 report("invalid_robot_position")
             return None
         start = (math.floor(y), math.floor(x))
-        if not _open(safe, *start):
+        if not _open(free, *start):
             if rejections is not None:
                 row, col = start
                 inside = 0 <= row < grid.shape[0] and 0 <= col < grid.shape[1]
@@ -155,10 +158,8 @@ class FrontierPlanner:
                     reason, cost = "start_invalid_cell", None
                 elif cost < 0:
                     reason = "start_unknown"
-                elif cost >= 50:
-                    reason = "start_occupied"
                 else:
-                    reason = "start_clearance"
+                    reason = "start_occupied"
                 report(reason, start_cell_xy=(col, row), start_cost=cost)
             return None
 
@@ -171,8 +172,6 @@ class FrontierPlanner:
             if rejections is not None:
                 report("no_frontier_cells", start_cell_xy=start[::-1])
             return None
-        distance, nearest = distance_transform_edt(~frontiers, return_indices=True)
-        candidates = safe & (distance <= cells + math.sqrt(2))
 
         def world(cell):
             row, col = cell
@@ -188,9 +187,8 @@ class FrontierPlanner:
             if traveled > distances[cell]:
                 continue
             row, col = cell
-            if candidates[cell]:
-                frontier = tuple(nearest[:, row, col])
-                frontier_xy = world(frontier)
+            if frontiers[cell]:
+                frontier_xy = world(cell)
                 if rejections is not None:
                     reachable_candidates += 1
                 if not all(math.dist(frontier_xy, old) > self.explored_radius_m for old in self.excluded):
@@ -199,10 +197,6 @@ class FrontierPlanner:
                 elif allow_frontier is not None and not allow_frontier(frontier_xy):
                     if rejections is not None:
                         rejections["filtered_frontier"] += 1
-                elif not _line_clear(free, (col + 0.5, row + 0.5),
-                                     (frontier[1] + 0.5, frontier[0] + 0.5)):
-                    if rejections is not None:
-                        rejections["frontier_line_blocked"] += 1
                 else:
                     route = []
                     node = cell
@@ -210,7 +204,7 @@ class FrontierPlanner:
                         route.append(node)
                         node = parents[node]
                     route.reverse()
-                    goal = self._waypoint(route, safe, (x, y), tuple(robot_xy),
+                    goal = self._waypoint(route, free, (x, y), tuple(robot_xy),
                                           frontier_xy, resolution, world, rejections)
                     if goal is not None:
                         if rejections is not None:
@@ -223,9 +217,9 @@ class FrontierPlanner:
 
             for dy, dx, step in _NEIGHBORS:
                 next_cell = row + dy, col + dx
-                if not _open(safe, *next_cell):
+                if not _open(free, *next_cell):
                     continue
-                if dy and dx and not (_open(safe, row + dy, col) and _open(safe, row, col + dx)):
+                if dy and dx and not (_open(free, row + dy, col) and _open(free, row, col + dx)):
                     continue
                 cost = traveled + step
                 if cost < distances.get(next_cell, math.inf):
@@ -233,10 +227,8 @@ class FrontierPlanner:
                     parents[next_cell] = cell
                     heapq.heappush(queue, (cost, next_cell))
         if rejections is not None:
-            candidate_cells = int(np.count_nonzero(candidates))
-            if not candidate_cells:
-                reason = "no_safe_frontier_cells"
-            elif not reachable_candidates:
+            candidate_cells = int(np.count_nonzero(frontiers))
+            if not reachable_candidates:
                 reason = "no_reachable_candidate_cells"
             else:
                 reason = "all_reachable_candidates_rejected"
@@ -245,7 +237,7 @@ class FrontierPlanner:
                    visited_cells=len(distances))
         return None
 
-    def _waypoint(self, route, safe, start, robot_xy, frontier_xy, resolution, world, rejections=None):
+    def _waypoint(self, route, free, start, robot_xy, frontier_xy, resolution, world, rejections=None):
         path = (robot_xy, *(world(cell) for cell in route))
         best = None
         traveled = 0.0
@@ -258,7 +250,7 @@ class FrontierPlanner:
             if math.dist(robot_xy, path[index]) + 1e-9 < self.min_goal_m:
                 if rejections is not None:
                     rejections["waypoint_too_close"] += 1
-            elif not _line_clear(safe, start, (col + 0.5, row + 0.5)):
+            elif not _line_clear(free, start, (col + 0.5, row + 0.5)):
                 if rejections is not None:
                     rejections["waypoint_line_blocked"] += 1
             else:

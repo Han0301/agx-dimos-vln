@@ -3,9 +3,15 @@
 import copy
 import logging
 import math
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from contextlib import ExitStack
+from contextvars import copy_context
 from functools import partial
+from uuid import uuid4
+
+from httpx import HTTPError
 
 from dimos.plugins.llm.client import LLMClient
 from dimos.plugins.path_tracker.messages import decode_result, odom_pose
@@ -160,11 +166,14 @@ def create_runner(profile, *, locate_only=False, motion_tracker=None, exploratio
                 has_memory = False
 
                 def memory_call(method, *args):
-                    nonlocal memory_available
+                    nonlocal memory_available, has_memory
                     if not memory_available:
                         return None
                     try:
                         return method(*args)
+                    except TimeoutError:
+                        has_memory = False
+                        raise
                     except SimpleMemoryUnavailable as exc:
                         memory_available = False
                         event(logger, "simple_memory_unavailable", operation=method.__name__,
@@ -172,9 +181,8 @@ def create_runner(profile, *, locate_only=False, motion_tracker=None, exploratio
                         logger.warning("Simple spatial memory unavailable: %s", exc)
                         return None
 
-                def detect_for_search(frame, target, remaining, **kwargs):
+                def record_memory(frame, remaining, *, background=False):
                     nonlocal last_memory_frame, has_memory
-                    result = skill.detect(frame, target, remaining, **kwargs)
                     frame_id = frame.odom.header.frame_id
                     odom_stamp = stamp_ns(frame.odom.header)
                     frame_fields = None
@@ -182,15 +190,15 @@ def create_runner(profile, *, locate_only=False, motion_tracker=None, exploratio
                         frame_fields = {
                             "observation_id": getattr(frame, "observation_id", None),
                             "source_stamp_ns": frame.stamp_ns, "odom_stamp_ns": odom_stamp,
-                            "world_frame": frame_id, "detection_status": result["status"],
-                            "depth_gap_ms": frame.depth_gap_ms if math.isfinite(frame.depth_gap_ms) else None,
-                            "odom_gap_ms": frame.odom_gap_ms if math.isfinite(frame.odom_gap_ms) else None,
+                            "world_frame": frame_id, "sampling_source": "background" if background else "detection",
+                            "depth_gap_ms": frame.depth_gap_ms if math.isfinite(getattr(frame, "depth_gap_ms", math.inf)) else None,
+                            "odom_gap_ms": frame.odom_gap_ms if math.isfinite(getattr(frame, "odom_gap_ms", math.inf)) else None,
                         }
                     if not memory_available:
                         if frame_fields is not None:
                             event(logger, "simple_memory_sample", **frame_fields,
                                   outcome="skipped", reason="memory_unavailable")
-                        return result
+                        return
                     if last_memory_frame is not None:
                         old_id, old_rgb_stamp, old_odom_stamp = last_memory_frame
                         reset_reason = None
@@ -212,16 +220,28 @@ def create_runner(profile, *, locate_only=False, motion_tracker=None, exploratio
                             if frame_fields is not None:
                                 event(logger, "simple_memory_sample", **frame_fields,
                                       outcome="skipped", reason="duplicate_rgb_stamp")
-                            return result
+                            return
                     last_memory_frame = frame_id, frame.stamp_ns, odom_stamp
-                    if frame_fields is None:
-                        stored = memory_call(memory.record, frame, remaining)
-                    else:
-                        with event_context(**frame_fields):
-                            stored = memory_call(memory.record, frame, remaining)
+                    position = frame.odom.pose.position
+                    orientation = frame.odom.pose.orientation
+                    pose = (
+                        position.x, position.y, position.z,
+                        orientation.x, orientation.y, orientation.z, orientation.w,
+                    )
+                    record = partial(
+                        memory.record,
+                        min_distance_m=0.2,
+                        min_yaw_delta_deg=15.0,
+                        min_interval_s=1.0,
+                        sample_group="background" if background else None,
+                        stamp_ns=frame.stamp_ns,
+                        observation_id=getattr(frame, "observation_id", None),
+                    )
+                    with event_context(**(frame_fields or {})):
+                        stored = memory_call(record, frame.jpeg, pose, remaining)
                     if stored:
                         has_memory = True
-                    return result
+                    return
 
                 def query_memory(target, remaining):
                     if not memory_available or not has_memory:
@@ -229,6 +249,107 @@ def create_runner(profile, *, locate_only=False, motion_tracker=None, exploratio
                               reason="empty_memory" if memory_available else "memory_unavailable")
                         return None
                     return memory_call(memory.query_hits, target, remaining)
+
+                memory_lock = threading.Lock()
+                stopped = threading.Event()
+                executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="memory-query")
+                motion_detection_executor = resources.enter_context(
+                    ThreadPoolExecutor(max_workers=1, thread_name_prefix="memory-motion-detection")
+                )
+                prefetched = None
+
+                def lookup(target, remaining, lookup_id):
+                    with memory_lock, event_context(memory_lookup_id=lookup_id, memory_trigger="parallel_detection"):
+                        return query_memory(target, remaining)
+
+                def detect_for_search(frame, target, remaining, *, memory_target=None, **kwargs):
+                    nonlocal prefetched
+                    prefetched = None
+                    recording = recording_enabled()
+                    lookup_id = uuid4().hex if recording else None
+                    fields = {
+                        "memory_lookup_id": lookup_id, "source_stamp_ns": frame.stamp_ns,
+                        "observation_id": getattr(frame, "observation_id", None),
+                    } if recording else {}
+                    if recording:
+                        event(logger, "parallel_detection_started", **fields)
+                    decision = "detection_error"
+                    future = executor.submit(
+                        copy_context().run, lookup, memory_target or target, remaining, lookup_id,
+                    )
+                    try:
+                        result = skill.detect(frame, target, remaining, **kwargs)
+                        if not result.get("bbox_2d") and result["status"] != "localized":
+                            decision = "memory_wait"
+                            try:
+                                hits = future.result(timeout=remaining())
+                                prefetched = frame.stamp_ns, (lookup_id, hits)
+                                decision = "memory_hits" if hits else "memory_no_hits"
+                            except FutureTimeout:
+                                remaining()
+                                prefetched = frame.stamp_ns, (lookup_id, None)
+                                decision = "memory_timeout"
+                        else:
+                            decision = "vision_priority"
+                        if memory_lock.acquire(blocking=False):
+                            try:
+                                if last_memory_frame is None or frame.stamp_ns > last_memory_frame[1]:
+                                    record_memory(frame, remaining)
+                            finally:
+                                memory_lock.release()
+                        return result
+                    finally:
+                        cancelled = future.cancel()
+                        if recording:
+                            event(logger, "parallel_detection_finished", **fields,
+                                  decision=decision, query_cancelled=cancelled)
+
+                def take_prefetched(frame):
+                    return prefetched[1] if prefetched and prefetched[0] == frame.stamp_ns else (None, None)
+
+                def sample_background():
+                    def remaining():
+                        if stopped.is_set():
+                            raise TimeoutError("Memory sampling stopped")
+                        return 65.0
+
+                    try:
+                        with memory_lock:
+                            metrics = memory_call(memory.preload, remaining)
+                        if metrics is not None:
+                            logger.info("Spatial memory preload ready backend=%s", metrics["backend"])
+                    except TimeoutError:
+                        if stopped.is_set():
+                            return
+                        logger.warning("Spatial memory preload timed out")
+
+                    last_stamp = None
+                    while not stopped.wait(0.2):
+                        frame = observations.memory_view()
+                        if frame is None or frame.stamp_ns == last_stamp:
+                            continue
+                        if not memory_lock.acquire(blocking=False):
+                            continue
+                        try:
+                            record_memory(frame, lambda: min(30.0, remaining()), background=True)
+                            last_stamp = frame.stamp_ns
+                        except TimeoutError:
+                            if not stopped.is_set():
+                                logger.warning("Background memory sampling timed out")
+                                if recording_enabled():
+                                    event(logger, "background_memory_timeout", source_stamp_ns=frame.stamp_ns)
+                        finally:
+                            memory_lock.release()
+
+                sampler = threading.Thread(target=sample_background, name="memory-sampling")
+                sampler.start()
+
+                def stop_memory():
+                    stopped.set()
+                    sampler.join()
+                    executor.shutdown(cancel_futures=True)
+
+                resources.callback(stop_memory)
 
             def observe(previous, remaining):
                 if previous is None:
@@ -245,6 +366,9 @@ def create_runner(profile, *, locate_only=False, motion_tracker=None, exploratio
                     remaining, after_stamp_ns=previous.stamp_ns, accept_odom=accept_odom
                 )
 
+            def retry_view(previous, remaining):
+                return observations.snapshot(remaining, after_stamp_ns=previous.stamp_ns)
+
             def confirmed(frame, outcome, remaining):
                 if approach is not None:
                     return outcome
@@ -256,7 +380,7 @@ def create_runner(profile, *, locate_only=False, motion_tracker=None, exploratio
                 confirmed,
             )
 
-            def explore(target, remaining, progress, cancel, frame, detection):
+            def explore(target, remaining, progress, cancel, frame, detection, *, memory_target=None):
                 next_view = toward_target = None
                 if approach is not None:
                     mapper = DepthOccupancyMap(profile["camera"], footprint_radius=clearance)
@@ -269,10 +393,49 @@ def create_runner(profile, *, locate_only=False, motion_tracker=None, exploratio
                         directed = MemoryExploration(
                             *motion_args, cloud=cloud, query_memory=query_memory,
                             turn=tracker.turn_to, visualization=visualization,
+                            prefetched_memory=take_prefetched,
                         )
+                        def detect_during_motion(seed, stopped, deadline):
+                            def motion_budget():
+                                if stopped.is_set():
+                                    raise TimeoutError("Historical viewpoint motion ended")
+                                left = deadline - time.monotonic()
+                                if left <= 0:
+                                    raise TimeoutError("Historical viewpoint motion ended")
+                                return min(remaining(), left)
+
+                            stamp = seed.stamp_ns
+                            while not stopped.is_set():
+                                try:
+                                    candidate = observations.snapshot(motion_budget, after_stamp_ns=stamp)
+                                    stamp = candidate.stamp_ns
+                                    result = skill.detect(
+                                        candidate, target, motion_budget, allow_bad_depth=True,
+                                        stop_m=detection.get("standoff_m"), purpose="memory_motion_det",
+                                    )
+                                    motion_budget()
+                                except (HTTPError, RuntimeError, ValueError, TimeoutError) as exc:
+                                    logger.info("Memory motion detection ended error_type=%s", type(exc).__name__)
+                                    return None
+                                if result["status"] in {"localized", "invalid_depth"} and result.get("bbox_2d"):
+                                    return candidate, result
+                                if result["status"] == "provider_failure":
+                                    return None
+                            return None
+
+                        def start_motion_detection(seed, stopped, deadline):
+                            return motion_detection_executor.submit(
+                                copy_context().run, detect_during_motion, seed, stopped, deadline,
+                            )
+
+                        directed.start_motion_detection = start_motion_detection
                         return directed.run_search(
-                            search, target, remaining, progress, frame, detection,
-                            camera=profile["camera"],
+                            ActiveSearch(observe, partial(detect_for_search, allow_bad_depth=True,
+                                                        purpose="search_det", memory_target=memory_target),
+                                         confirmed),
+                            target, remaining, progress, frame, detection,
+                            camera=profile["camera"], memory_target=memory_target, rotation_fallback=True,
+                            retry_view=retry_view,
                         )
                     else:
                         next_view = RotationSweep(
@@ -284,7 +447,7 @@ def create_runner(profile, *, locate_only=False, motion_tracker=None, exploratio
                 return search(
                     target, remaining, progress, next_view=next_view,
                     initial_frame=frame, initial_detection=detection,
-                    toward_target=toward_target,
+                    toward_target=toward_target, retry_view=retry_view,
                 )
 
             find_object = FindObject(

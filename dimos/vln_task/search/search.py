@@ -9,7 +9,7 @@ logger = logging.getLogger('dimos.plugins.active_search.search')
 SCAN_STATUSES = frozenset({
     "not_visible", "target_mismatch", "verification_unavailable", "invalid_detection",
 })
-SEARCH_SEED_STATUSES = SCAN_STATUSES | {"invalid_depth"}
+SEARCH_SEED_STATUSES = SCAN_STATUSES | {"invalid_depth", "provider_failure"}
 
 
 class ExplorationUnavailable(RuntimeError):
@@ -34,6 +34,7 @@ class ActiveSearch:
         self, target, remaining, on_progress=None, *,
         next_view=None, initial_frame=None, initial_detection=None, stop_m=None,
         toward_target=None, on_detection=None, exhausted_reason="sweep_complete",
+        retry_view=None, recover_memory=None, take_detection=None,
     ):
         """Find the object, optionally obtaining a new stopped view by exploration.
 
@@ -86,9 +87,15 @@ class ActiveSearch:
         if on_detection is not None and initial_detection is not None:
             on_detection(initial_frame, initial_detection)
 
+        provider_failed = initial_detection is not None and initial_detection["status"] == "provider_failure"
         while True:
             try:
-                if explore:
+                if provider_failed:
+                    next_frame = recover_memory(frame, remaining, on_progress) if recover_memory else None
+                    if next_frame is None:
+                        next_frame = (retry_view or self.observe)(frame, remaining)
+                    explore = False
+                elif explore:
                     remaining()
                     next_frame = None
                     if depth_failure is not None and toward_target is not None:
@@ -115,13 +122,20 @@ class ActiveSearch:
                 reason = str(exc) or terminal_status
                 break
             except TimeoutError:
-                reason = "no_new_view" if frame is not None else "no_observation"
+                if provider_failed:
+                    terminal_status = reason = "provider_failure"
+                else:
+                    reason = "no_new_view" if frame is not None else "no_observation"
                 break
             if frame is not None and next_frame.stamp_ns <= frame.stamp_ns:
                 raise ValueError("Active search requires a newer observation")
             frame = next_frame
 
-            detection = self.detect(frame, target, remaining, **detection_options)
+            if on_detection is not None:
+                emit("detecting_with_memory")
+            detection = take_detection(frame) if take_detection is not None else None
+            if detection is None:
+                detection = self.detect(frame, target, remaining, **detection_options)
             remaining()
             attempt = {"stamp_ns": frame.stamp_ns, **detection}
             attempts.append(attempt)
@@ -140,6 +154,13 @@ class ActiveSearch:
             if on_detection is not None:
                 on_detection(frame, detection)
             status = detection["status"]
+            if status == "provider_failure":
+                if provider_failed:
+                    terminal_status = reason = status
+                    break
+                provider_failed = True
+                continue
+            provider_failed = False
             if status != "localized":
                 if next_view is not None:
                     if status == "invalid_depth":
