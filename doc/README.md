@@ -21,7 +21,7 @@
 | 基座参数和原生接口 | [配置说明](../config/README.md)、[interfaces.yaml](../config/interfaces.yaml) |
 | 独立跟踪与速度预览 | [path_tracker](../config/plugins/path_tracker/README.md) |
 | 已实现插件 | [插件配置索引](../config/plugins/README.md) |
-| Web 任务、模型调用和搜索 | [Web 输入](../config/plugins/web_input/README.md)、[VLN 主 Agent](../config/plugins/vln_task/README.md)、[多视角找物](../config/plugins/active_search/README.md) |
+| Web 任务、模型调用和搜索 | [Web 接口与职责](../config/plugins/web_input/README.md)、[VLN 主 Agent](../config/plugins/vln_task/README.md)、[多视角找物](../config/plugins/active_search/README.md) |
 | 日志解耦准则、字段和归档 | [运行日志](../config/plugins/runtime_log/README.md) |
 
 ## 内容边界

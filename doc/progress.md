@@ -12,7 +12,7 @@
 - 独立 RViz 视图沿用 XNavDP 显示样式，trajectory/result 直连，点云与 TF 辅助仅在可视化入口启用。
 - 独立 path_tracker 订阅原生结果/odom/深度；使用 MPC 与碰撞检查，默认终端速度预览。默认安装准备跟踪依赖。
 - VLM 默认由调用进程直连 DashScope，原生 HTTP 配置可选。VLM、LLM、主 Agent 和 Web 支持独立文件测试，提供显式期限、队列、取消和配置检查。
-- `dimos/vln_task/` 作为独立上层，统一组织 CLI/Web、LLM/VLM、RGB-D 观测、XNavDP 和 tracker；基础插件保留独立输入输出。
+- `dimos/vln_task/` 作为独立上层，统一组织 CLI/Web、LLM/VLM、RGB-D 观测、XNavDP 和 tracker；基础插件保留独立输入输出。Web 传输提供任务提交、查询和取消，VLN Task 提供导航页面、相机流、参考图分派和 Stop 策略。
 - Web 启动时准备相机缓存、XNavDP ROS 端点和 Ollama 模型预热，按阶段记录等待与请求耗时。
 - 找物由 VLN Task 先检测当前画面；未见目标时按 60° 间隔原地扫视。有框但深度无效时，结合 RGB-D 与新鲜 LiDAR 选安全短目标，停车后复检；回放从录制数据获取新视角。
 - 实机 profile 在 Web 进程内持续为当前任务的探索点或接近点规划，将校验通过的路径交给 tracker。到达或取消时停止，速度经原生 `/cmd_vel` 送往 Go2 基座。

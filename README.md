@@ -18,7 +18,8 @@ XNavDP ──→ 已校验的任务路径 ──→ 内置 tracker ──→ /cm
 
 | 模块 | 职责 |
 | --- | --- |
-| `web_input`、`vln_task` | 网页接收文字和可选图片。主 Agent 管理任务历史、工具调用、期限及状态 |
+| `web_input` | 通用 HTTP 任务入口。接收文字和可选图片，返回任务 ID、进度和结果，支持排队与取消 |
+| `vln_task` | 提供导航页面、相机预览和 Stop。主 Agent 管理参考图分派、任务历史、工具调用和期限 |
 | `llm`、`vlm` | 分别调用 Ollama 与 DashScope。VLN Task 的 Web 适配启动时预热 LLM，VLM 由当前进程按需调用 |
 | `vln_task/search` | 实机原地扫视；目标匹配但深度无效时沿目标方向安全短步靠近并复检。回放用录制视角 |
 | `xnavdp` | 用原始 RGB 时间戳提交点目标，关联并校验服务端的原生轨迹与结果 |

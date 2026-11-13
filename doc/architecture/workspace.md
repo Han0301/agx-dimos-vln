@@ -79,7 +79,7 @@ DDS 共用 `sh/xnavdp_ros2/`，远端 TCP 端口固定 7411。当前服务端为
 
 **插件保护准则。** 严禁修改 `dimos/plugins/` 下的既有插件，也严禁在插件中加入上层应用逻辑。上层应用逻辑统一放在 `dimos/` 下独立于 `plugins/` 的应用目录中，通过插件现有接口调用基础能力。
 
-VLN Task 的执行实现位于 `dimos/vln_task/`，基础模型和控制能力位于 `dimos/plugins/`。Web 与 CLI 统一调用上层装配；找物策略、扫视序列、深度恢复、目标刷新及任务停距由上层组织。旧 Python 导入入口仅作兼容。
+VLN Task 的执行实现位于 `dimos/vln_task/`，基础模型和控制能力位于 `dimos/plugins/`。Web 与 CLI 统一调用上层装配。通用 Web 插件提供任务队列、查询和取消，VLN Task 注册导航页面、相机流及导航路由；找物策略、扫视序列、深度恢复、目标刷新及任务停距由上层组织。旧 Python 导入入口仅作兼容。
 
 `python -m dimos.vln_task` 为上层命令入口，配置继续使用 `config/plugins/vln_task/` 和现有 profiles。基础插件的消息接口、执行参数和启停方式沿用原契约。
 
